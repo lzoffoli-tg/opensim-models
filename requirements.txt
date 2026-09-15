@@ -1,8 +1,10 @@
 numpy>=1.24
 pandas>=2.0
 
-# OpenSim Python bindings, required to build/pose/export an OpensimUser.
-# On Windows, install via a compatible Conda environment if this fails:
+# OpenSim Python bindings, required to build/pose/export an OpenSimModel.
+# The native visualizer DLL path (Windows) is fixed up automatically at
+# import time; no extra setup is needed once these bindings are installed.
+# On Windows, install via a compatible Conda environment if pip install fails:
 #   conda install -c opensim-org opensim
 opensim
 

@@ -7,7 +7,7 @@ import csv
 import numpy as np
 import pandas as pd
 
-DEFAULT_DATASET = Path(__file__).resolve().parents[2] / "assets" / "ansur_ref.csv"
+DEFAULT_DATASET = Path(__file__).resolve().parent / "assets" / "ansur_ref.csv"
 
 
 @dataclass(frozen=True)

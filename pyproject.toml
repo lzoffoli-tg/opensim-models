@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "opensim-user"
+name = "opensim-models"
 version = "0.1.0"
-description = "Anthropometrically scaled OpenSim users based on ANSUR II references"
+description = "Composable OpenSim models, including an ANSUR II anthropometric user"
 requires-python = ">=3.10"
 dependencies = [
     "numpy>=1.24",
@@ -18,6 +18,9 @@ test = ["pytest>=8"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+opensim_models = ["models/user/assets/*", "models/user/assets/meshes/*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
