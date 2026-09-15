@@ -3,8 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from ...model import OpenSimModel
-from .data import DEFAULT_DATASET, resolve_reference
-from .mapping import segment_scale_factors
+from ._data import DEFAULT_DATASET, resolve_reference
+from ._mapping import segment_scale_factors
 
 _ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 DEFAULT_MODEL_PATH = _ASSETS_DIR / "rajagopalaiulrich2023.osim"

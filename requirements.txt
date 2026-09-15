@@ -8,5 +8,11 @@ pandas>=2.0
 #   conda install -c opensim-org opensim
 opensim
 
+# pythonocc-core (OpenCascade bindings), required only for
+# OpenSimModel.from_step (building a model from a .step/.stp CAD file).
+# Not reliably installable via pip; install via conda instead:
+#   conda install -c conda-forge pythonocc-core
+pythonocc-core
+
 # Testing
 pytest>=8

@@ -5,7 +5,10 @@ import numpy as np
 import pytest
 
 from opensim_models import OpenSimModel
-from opensim_models.models.user import DEFAULT_MODEL_PATH
+
+# DEFAULT_MODEL_PATH is User's internal default, reused here as a real .osim
+# fixture to test OpenSimModel's generic facade rather than User specifically.
+from opensim_models.models.user.user import DEFAULT_MODEL_PATH
 
 opensim = pytest.importorskip("opensim")
 
@@ -251,6 +254,36 @@ def test_export_writes_a_reloadable_osim_file_with_current_posture():
         reloaded.initSystem()
         hip_flexion_r = reloaded.getCoordinateSet().get("hip_flexion_r")
         assert hip_flexion_r.get_default_value() == pytest.approx(np.deg2rad(25.0))
+
+
+def test_export_copies_referenced_meshes_into_a_geometry_folder():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        geometry_dir = tmp_path / "assets"
+        geometry_dir.mkdir()
+        mesh_file = geometry_dir / "part.stl"
+        mesh_file.write_bytes(b"solid fake\nendsolid fake\n")
+
+        model = build_single_body_model(tmp_path, "part_body", "part_joint")
+        model.body("part_body").attachGeometry(opensim.Mesh("part.stl"))
+        model.add_geometry_directory(geometry_dir)
+
+        export_dir = tmp_path / "exported"
+        export_dir.mkdir()
+        destination = model.export(export_dir / "model.osim")
+
+        exported_mesh = destination.parent / "Geometry" / "part.stl"
+        assert exported_mesh.is_file()
+        assert exported_mesh.read_bytes() == mesh_file.read_bytes()
+
+
+def test_export_without_referenced_meshes_creates_no_geometry_folder():
+    model = make_model()
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        destination = model.export(Path(tmp_dir) / "exported.osim")
+
+        assert not (destination.parent / "Geometry").exists()
 
 
 # ---------------------------------------------------------------------------

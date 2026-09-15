@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+__all__ = ["import_opensim", "OpenSimModel"]
 
 
 def _ensure_visualizer_dll_path() -> None:
@@ -26,6 +29,42 @@ def _ensure_visualizer_dll_path() -> None:
     path_entries = os.environ.get("PATH", "").split(os.pathsep)
     if str(library_bin) not in path_entries:
         os.environ["PATH"] = str(library_bin) + os.pathsep + os.environ.get("PATH", "")
+
+
+def _iter_set(component_set: Any) -> Any:
+    for index in range(component_set.getSize()):
+        yield component_set.get(index)
+
+
+def _unique_component_name(prefix: str, name: str, existing: set[str]) -> str:
+    candidate = f"{prefix}_{name}"
+    suffix = 2
+    while candidate in existing:
+        candidate = f"{prefix}_{name}_{suffix}"
+        suffix += 1
+    return candidate
+
+
+def _unique_body_name(raw_name: str, existing: set[str]) -> str:
+    """Sanitize a CAD part name into a valid, unique OpenSim body name."""
+    sanitized = "".join(char if char.isalnum() else "_" for char in raw_name).strip("_") or "body"
+    if sanitized[0].isdigit():
+        sanitized = f"body_{sanitized}"
+    candidate = sanitized
+    suffix = 2
+    while candidate in existing:
+        candidate = f"{sanitized}_{suffix}"
+        suffix += 1
+    return candidate
+
+
+def _patch_sockets(root: Any, renamed_paths: dict[str, str]) -> None:
+    for component in (root, *root.getComponentsList()):
+        for socket_name in component.getSocketNames():
+            socket = component.updSocket(socket_name)
+            path = socket.getConnecteePath()
+            if path in renamed_paths:
+                socket.setConnecteePath(renamed_paths[path])
 
 
 def import_opensim() -> Any:
@@ -56,29 +95,6 @@ def import_opensim() -> Any:
         ) from error
     opensim.Logger.removeFileSink()  # OpenSim otherwise writes opensim.log to the CWD
     return opensim
-
-
-def _iter_set(component_set: Any) -> Any:
-    for index in range(component_set.getSize()):
-        yield component_set.get(index)
-
-
-def _unique_component_name(prefix: str, name: str, existing: set[str]) -> str:
-    candidate = f"{prefix}_{name}"
-    suffix = 2
-    while candidate in existing:
-        candidate = f"{prefix}_{name}_{suffix}"
-        suffix += 1
-    return candidate
-
-
-def _patch_sockets(root: Any, renamed_paths: dict[str, str]) -> None:
-    for component in (root, *root.getComponentsList()):
-        for socket_name in component.getSocketNames():
-            socket = component.updSocket(socket_name)
-            path = socket.getConnecteePath()
-            if path in renamed_paths:
-                socket.setConnecteePath(renamed_paths[path])
 
 
 class OpenSimModel:
@@ -127,6 +143,113 @@ class OpenSimModel:
         self._anchor_names: set[str] = set()
         self._merged: dict[int, list[tuple[str, str]]] = {}
         self._visualizer: Any | None = None
+
+    @classmethod
+    def from_step(
+        cls,
+        step_path: str | Path,
+        *,
+        mesh_dir: str | Path | None = None,
+        density: float = 1000.0,
+        densities: dict[str, float] | None = None,
+        add_free_joints: bool = True,
+        linear_deflection: float = 0.5e-3,
+        angular_deflection: float = 0.25,
+    ) -> "OpenSimModel":
+        """Build a model from a CAD assembly, generating a body per solid.
+
+        Each solid found in the STEP file becomes an ``opensim.Body`` whose
+        mass and inertia tensor are derived from its geometry (volume times
+        ``density``), with a triangulated mesh of the solid written to disk
+        and attached to the body. Because a plain CAD assembly carries no
+        kinematic information, every body is (by default) connected to
+        ground with a 6-dof :class:`opensim.FreeJoint` placed at the solid's
+        original position, so the model loads and simulates immediately with
+        the assembly's original layout; replace those joints with the
+        assembly's real kinematic chain before relying on the model's
+        dynamics.
+
+        Parameters
+        ----------
+        step_path : str or pathlib.Path
+            Path to a ``.step``/``.stp`` file.
+        mesh_dir : str, pathlib.Path or None, optional
+            Directory to write the generated mesh files to. Defaults to a
+            ``{step_path.stem}_meshes`` folder next to ``step_path``.
+        density : float, optional
+            Density, in kg/m^3, used for solids not listed in ``densities``.
+            STEP files rarely carry material data, so this is a generic
+            placeholder (default ``1000.0``); pass real values for physically
+            accurate mass and inertia.
+        densities : dict[str, float] or None, optional
+            Per-part density overrides, keyed by the part name as read from
+            the STEP file.
+        add_free_joints : bool, optional
+            When ``True`` (default), attach each body to ground with a
+            ``FreeJoint`` at its original CAD position and initialize the
+            model. When ``False``, bodies are added without joints and the
+            caller must connect them and call ``model.model.initSystem()``
+            before using the model.
+        linear_deflection, angular_deflection : float, optional
+            Tessellation tolerances (metres, radians) forwarded to the mesh
+            generator; smaller values produce finer, larger meshes.
+
+        Returns
+        -------
+        OpenSimModel
+            Model containing one body per solid found in the STEP file.
+
+        Raises
+        ------
+        FileNotFoundError
+            If ``step_path`` does not exist.
+        ValueError
+            If the STEP file contains no solids.
+        RuntimeError
+            If the ``pythonocc-core`` (``OCC``) package is not installed.
+        """
+        from ._cad_import import _read_step_solids, _solid_mass_properties, _write_solid_mesh
+
+        step_path = Path(step_path)
+        if not step_path.is_file():
+            raise FileNotFoundError(step_path)
+        destination_dir = Path(mesh_dir) if mesh_dir is not None else step_path.parent / f"{step_path.stem}_meshes"
+        destination_dir.mkdir(parents=True, exist_ok=True)
+
+        model = cls(model_path=None)
+        used_names: set[str] = set()
+        for part_name, solid in _read_step_solids(step_path):
+            body_name = _unique_body_name(part_name, used_names)
+            used_names.add(body_name)
+            part_density = (densities or {}).get(part_name, density)
+            mass, center_of_mass, inertia = _solid_mass_properties(solid, part_density)
+
+            mesh_path = destination_dir / f"{body_name}.stl"
+            _write_solid_mesh(solid, center_of_mass, mesh_path, linear_deflection, angular_deflection)
+
+            body = model.opensim.Body(
+                body_name, mass, model.opensim.Vec3(0, 0, 0), model.opensim.Inertia(*inertia)
+            )
+            body.attachGeometry(model.opensim.Mesh(mesh_path.name))
+            model.model.addBody(body)
+
+            if add_free_joints:
+                joint = model.opensim.FreeJoint(
+                    f"{body_name}_joint",
+                    model.model.getGround(),
+                    model.opensim.Vec3(*center_of_mass),
+                    model.opensim.Vec3(0, 0, 0),
+                    body,
+                    model.opensim.Vec3(0, 0, 0),
+                    model.opensim.Vec3(0, 0, 0),
+                )
+                model.model.addJoint(joint)
+
+        if add_free_joints:
+            model.model.finalizeConnections()
+            model.state = model.model.initSystem()
+        model.add_geometry_directory(destination_dir)
+        return model
 
     def _unlock_coordinates(self) -> None:
         """Unlock every coordinate so callers can fully repose the model.
@@ -469,7 +592,7 @@ class OpenSimModel:
         self.model.scale(self.state, scale_set, True)
         self.state = self.model.initSystem()
 
-    def export(self, model_path: str | Path) -> Path:
+    def export(self, model_path: str | Path, *, geometry_dir_name: str = "Geometry") -> Path:
         """Save the current model, including scaling and posture, as ``.osim``.
 
         OpenSim keeps coordinate values in the ``State`` rather than in the
@@ -477,10 +600,18 @@ class OpenSimModel:
         current state before serializing; otherwise the exported file would
         reopen in the model's original, unposed configuration.
 
+        Any mesh referenced by an attached body geometry is also copied next
+        to the exported file, under ``geometry_dir_name`` -- the folder name
+        OpenSim/Simbody search for automatically next to a ``.osim`` file --
+        so the export is self-contained and portable on its own.
+
         Parameters
         ----------
         model_path : str or pathlib.Path
             Destination path for the exported model file.
+        geometry_dir_name : str, optional
+            Name of the sibling folder receiving copies of the referenced
+            mesh files. Defaults to ``"Geometry"``.
 
         Returns
         -------
@@ -493,7 +624,43 @@ class OpenSimModel:
             coordinate.setDefaultValue(coordinate.getValue(self.state))
         destination = Path(model_path)
         self.model.printToXML(str(destination))
+        self._export_mesh_files(destination.parent / geometry_dir_name)
         return destination
+
+    def _referenced_mesh_filenames(self) -> set[str]:
+        filenames: set[str] = set()
+        for body in _iter_set(self.bodies):
+            geometry_property = body.getPropertyByName("attached_geometry")
+            for index in range(geometry_property.size()):
+                mesh = self.opensim.Mesh.safeDownCast(body.get_attached_geometry(index))
+                if mesh is not None:
+                    filenames.add(mesh.get_mesh_file())
+        return filenames
+
+    def _resolve_geometry_file(self, filename: str) -> Path | None:
+        search_dirs = list(self._geometry_dirs)
+        if self.model_path is not None:
+            search_dirs.append(self.model_path.parent)
+        for directory in search_dirs:
+            candidate = Path(directory) / filename
+            if candidate.is_file():
+                return candidate
+        return None
+
+    def _export_mesh_files(self, destination_dir: Path) -> None:
+        sources = {
+            filename: source
+            for filename in self._referenced_mesh_filenames()
+            if (source := self._resolve_geometry_file(filename)) is not None
+        }
+        if not sources:
+            return
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        for filename, source in sources.items():
+            destination = destination_dir / filename
+            if source.resolve() == destination.resolve():
+                continue
+            shutil.copy2(source, destination)
 
     def add_geometry_directory(self, directory: str | Path) -> None:
         """Register a directory to search for mesh geometry files on :meth:`show`.

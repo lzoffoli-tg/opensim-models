@@ -4,14 +4,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from opensim_models import OpenSimModel
-from opensim_models.models.user import (
-    DEFAULT_DATASET,
-    DEFAULT_MESHES_DIR,
-    User,
-    load_ansur,
-    resolve_reference,
-)
+from opensim_models import OpenSimModel, User
+
+# User only exposes DEFAULT_DATASET/DEFAULT_MESHES_DIR/load_ansur/resolve_reference
+# internally; tests reach into the implementation modules directly to exercise them.
+from opensim_models.models.user._data import DEFAULT_DATASET, load_ansur, resolve_reference
+from opensim_models.models.user.user import DEFAULT_MESHES_DIR
 
 try:
     import opensim

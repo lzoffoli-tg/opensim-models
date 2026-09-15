@@ -1,10 +1,7 @@
 from .model import OpenSimModel
-from .models.user import AnthropometricReference, User, load_ansur, resolve_reference
+from .models.user import User
 
 __all__ = [
-    "AnthropometricReference",
     "OpenSimModel",
     "User",
-    "load_ansur",
-    "resolve_reference",
 ]

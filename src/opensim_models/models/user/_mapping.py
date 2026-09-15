@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from .data import AnthropometricReference
+from ._data import AnthropometricReference
 
 DEFAULT_BODY_NAMES = (
     "pelvis",

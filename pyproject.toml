@@ -14,6 +14,7 @@ dependencies = [
 
 [project.optional-dependencies]
 opensim = ["opensim"]
+cad = ["pythonocc-core"]
 test = ["pytest>=8"]
 
 [tool.setuptools.packages.find]

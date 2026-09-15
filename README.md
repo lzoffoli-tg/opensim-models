@@ -7,11 +7,12 @@ Package Python per costruire e comporre modelli OpenSim. `OpenSimModel` è una f
 ```text
 src/opensim_models/
 	model.py                       # OpenSimModel: facade generica, show(), composizione di modelli
+	_cad_import.py                 # interno: lettura STEP/STP e generazione mesh per OpenSimModel.from_step
 	models/
 		user/
 			user.py                    # User(OpenSimModel): scaling antropometrico e setter di postura
-			data.py                    # caricamento ANSUR e percentili
-			mapping.py                 # mappa ANSUR -> corpi OpenSim
+			_data.py                   # interno: caricamento ANSUR e percentili
+			_mapping.py                # interno: mappa ANSUR -> corpi OpenSim
 			assets/
 				ansur_ref.csv           # riferimenti antropometrici ANSUR II
 				rajagopalaiulrich2023.osim  # modello OpenSim base di User
@@ -19,9 +20,12 @@ src/opensim_models/
 tests/
 	test_model.py                  # test esaustivi di OpenSimModel (facade + composizione)
 	test_user.py                   # test esaustivi di User (dati ANSUR, scaling, postura)
+	test_cad_import.py             # test di OpenSimModel.from_step (richiede pythonocc-core)
 ```
 
 Ogni modello specifico (oggi solo `User`) vive nella propria sottocartella sotto `models/`, con il proprio codice e i propri asset. Nuovi modelli (es. un attrezzo da palestra) si aggiungono allo stesso modo, come ulteriori sottoclassi di `OpenSimModel`.
+
+**Superficie pubblica.** Per ogni modello, l'unico simbolo importabile è la sua sottoclasse di `OpenSimModel` (`User`, oggi l'unica): `from opensim_models import OpenSimModel, User` è l'intera API pubblica del package. Tutto il resto -- dataset ANSUR, funzioni di risoluzione dei percentili, mappe di scaling, lettura CAD -- è dettaglio implementativo del modello che lo usa: vive in moduli non riesportati dai vari `__init__.py` (per `User`, i moduli con prefisso `_`, come `_data.py` e `_mapping.py`) e non è pensato per essere importato direttamente.
 
 Il modello di `User` referenzia 81 mesh VTP, tutte incluse nella cartella `models/user/assets/meshes/`. Sono presenti anche quattro alias aggiuntivi per femori e tibie.
 
@@ -40,6 +44,14 @@ conda install -c opensim-org opensim
 ```
 
 L'importazione di `opensim_models` non carica OpenSim immediatamente: il binding è richiesto solo quando si costruisce un `OpenSimModel` (o una sua sottoclasse come `User`); in assenza di un ambiente configurato viene sollevato un `RuntimeError` esplicito. Alla prima costruzione, il `PATH` nativo necessario al visualizzatore Simbody su Windows (le DLL nella cartella Conda `Library/bin`) viene sistemato automaticamente: non è richiesta nessuna configurazione manuale aggiuntiva.
+
+Per costruire un modello a partire da un file CAD (`OpenSimModel.from_step`, vedi sotto) serve in aggiunta `pythonocc-core` (binding Python di OpenCascade), anch'esso non installabile in modo affidabile via pip:
+
+```powershell
+conda install -c conda-forge pythonocc-core
+```
+
+Anche questa dipendenza è caricata solo al momento della chiamata a `from_step`: il resto del package funziona normalmente senza `pythonocc-core` installato.
 
 ## Creare un utente
 
@@ -171,17 +183,14 @@ angle = user.coordinate_degrees("arm_rot_r")
 
 Le coordinate bloccate dal modello, come le coordinate subtalare e MTP di questa versione, vengono sbloccate automaticamente al caricamento; un blocco impostato esplicitamente con `set_coordinate_locked` fa invece sollevare `ValueError` al relativo setter, invece di ignorare silenziosamente il valore.
 
-## Riferimenti ANSUR senza OpenSim
+## Dati ANSUR risolti
 
-Per usare soltanto il caricamento dati e i percentili, senza bisogno dei binding OpenSim:
+Il caricamento del CSV ANSUR e il calcolo dei percentili (`load_ansur`, `resolve_reference`) sono dettagli implementativi interni di `User`, non parte della superficie pubblica del package (vedi sopra). I valori risolti restano comunque accessibili dopo aver costruito un `User`, tramite la proprietà `anthropometry`:
 
 ```python
-from opensim_models.models.user import load_ansur, resolve_reference
+user = User("F", percentile=75.0)
 
-data = load_ansur()
-print(data.shape)
-
-reference = resolve_reference(gender="F", percentile=75.0)
+reference = user.anthropometry
 print(reference.height_cm)
 print(reference.values["footlength"])
 ```
@@ -199,7 +208,7 @@ user.show()
 
 `show()` (ereditato da `OpenSimModel`) apre il visualizzatore nativo Simbody con la postura corrente. Per aggiungere ulteriori cartelle di geometria (ad esempio per un modello composto, vedi sotto) si può passare `geometry_path` esplicitamente, oppure registrarle in anticipo con `add_geometry_directory(...)`.
 
-Il file esportato con `user.export(...)` contiene il modello scalato con la postura corrente; le mesh originali restano nella cartella `models/user/assets/meshes/`.
+Il file esportato con `user.export(...)` contiene il modello scalato con la postura corrente. `export()` copia inoltre automaticamente ogni mesh referenziata dai corpi del modello in una cartella `Geometry/` accanto al file `.osim` esportato (la convenzione di nome che OpenSim/Simbody cercano automaticamente accanto a un modello), così l'esportazione è portabile anche senza le cartelle di geometria originali (`models/user/assets/meshes/` per `User`, la cartella di `from_step` per un modello CAD).
 
 ## Comporre più modelli
 
@@ -224,6 +233,29 @@ scene.remove_model(equipment_model)  # torna allo stato precedente
 
 `add_model`, `remove_model`, `+` e la sua forma riflessa richiedono sempre che l'altro operando sia un `OpenSimModel`: in caso contrario sollevano `TypeError`. `remove_model` richiede che il modello indicato sia stato effettivamente aggiunto con `add_model` in precedenza, altrimenti solleva `ValueError`.
 
+## Costruire un modello da CAD (.step/.stp)
+
+`OpenSimModel.from_step` costruisce un modello direttamente da un assieme CAD in formato STEP, generando un corpo OpenSim per ogni solido trovato nel file:
+
+```python
+from opensim_models import OpenSimModel
+
+model = OpenSimModel.from_step("assieme.step", density=2700.0)  # es. alluminio, kg/m^3
+
+print(model.bodies.getSize())   # un body per solido/parte nominata nel file
+model.show()
+model.export("assieme.osim")
+```
+
+Per ogni solido:
+
+- il nome del corpo OpenSim viene ricavato dal nome della parte/prodotto nel file STEP (quando presente), altrimenti da un nome generico (`body_0`, `body_1`, ...);
+- massa e tensore d'inerzia sono calcolati dal volume del solido moltiplicato per la densità (`density`, oppure per parte tramite `densities={"nome_parte": ...}`); un file STEP puro raramente porta informazioni di materiale, quindi il valore di default (`1000.0` kg/m³) è solo un segnaposto generico;
+- viene generata e scritta su disco una mesh triangolare del solido (in `mesh_dir`, di default una cartella `{nome_file}_meshes` accanto al file STEP), centrata sul baricentro del solido e collegata al corpo come geometria;
+- l'unità dichiarata nel file STEP (millimetri, centimetri, pollici, ...) viene convertita automaticamente in metri.
+
+Un assieme CAD non contiene alcuna informazione cinematica: per poter caricare e simulare subito il modello, ogni corpo viene per default collegato al `ground` con un `FreeJoint` (6 gradi di libertà) posizionato nella collocazione originale del CAD (`add_free_joints=True`). Questi giunti sono un default di comodo, non la catena cinematica reale dell'assieme: vanno sostituiti con i giunti corretti prima di usare il modello per una simulazione dinamica. Con `add_free_joints=False` i corpi vengono aggiunti senza giunti; sarà poi necessario collegarli manualmente e richiamare `model.model.initSystem()`.
+
 ## Test
 
 Per eseguire l'intera suite (test statistici sui dati ANSUR e test di integrazione OpenSim):
@@ -232,10 +264,11 @@ Per eseguire l'intera suite (test statistici sui dati ANSUR e test di integrazio
 python -m pytest -q
 ```
 
-- `tests/test_model.py` copre `OpenSimModel` in modo esaustivo: caricamento (da file, vuoto, file mancante), sblocco delle coordinate, accessori nominati, gestione di coordinate/marker/muscoli, scaling, export, cartelle di geometria e l'intera composizione di modelli (`add_model`, `remove_model`, `__add__`, `__radd__`, rinomina automatica sulle collisioni, controlli di tipo).
+- `tests/test_model.py` copre `OpenSimModel` in modo esaustivo: caricamento (da file, vuoto, file mancante), sblocco delle coordinate, accessori nominati, gestione di coordinate/marker/muscoli, scaling, export (inclusa la copia delle mesh in `Geometry/`), cartelle di geometria e l'intera composizione di modelli (`add_model`, `remove_model`, `__add__`, `__radd__`, rinomina automatica sulle collisioni, controlli di tipo).
 - `tests/test_user.py` copre `User` in modo esaustivo: caricamento e validazione dei dati ANSUR (eseguibili anche senza OpenSim installato), risoluzione di percentile/altezza, scaling antropometrico, ogni singolo setter di postura, e l'integrazione con la facade ereditata da `OpenSimModel`.
+- `tests/test_cad_import.py` copre `OpenSimModel.from_step`: massa/inerzia calcolate correttamente da un solido di riferimento (con conversione di unità), generazione della mesh, giunti verso ground di default e relativi errori (file mancante, STEP senza solidi).
 
-I test che richiedono i binding OpenSim vengono saltati automaticamente se il modulo `opensim` non è importabile; i test sui soli dati ANSUR restano eseguibili in ogni caso.
+I test che richiedono i binding OpenSim vengono saltati automaticamente se il modulo `opensim` non è importabile; quelli di `test_cad_import.py` vengono saltati se `pythonocc-core` non è importabile; i test sui soli dati ANSUR restano eseguibili in ogni caso.
 
 ## Limiti e note
 
@@ -244,3 +277,5 @@ I test che richiedono i binding OpenSim vengono saltati automaticamente se il mo
 - L'altezza richiesta viene trasformata nel percentile ANSUR equivalente; per questo `user.height` può differire leggermente dall'input originale.
 - La composizione di modelli (`add_model`/`__add__`) è pensata per scheletri/oggetti indipendenti agganciati al ground: non offre (ancora) un modo per saldare un modello a un body specifico dell'altro.
 - Sono richiesti binding OpenSim compatibili con la versione del modello e con l'interprete Python attivo.
+- `OpenSimModel.from_step` non deduce alcuna gerarchia cinematica dal file CAD (un file STEP non la contiene): i `FreeJoint` generati di default vanno sostituiti con i giunti reali dell'assieme prima di affidarsi alla dinamica del modello.
+- La densità usata da `from_step` è un valore generico in assenza di dati materiale nel file STEP: per una massa/inerzia fisicamente corrette va passata esplicitamente (globalmente o per parte).
