@@ -1,8 +1,11 @@
+import sys
 import tempfile
 from pathlib import Path
 
 import pytest
 
+HOME = Path(__file__).absolute().parent.parent / "src" / "opensim_models"
+sys.path.append(str(HOME))
 from opensim_models import OpenSimModel
 
 pytest.importorskip("opensim")

@@ -47,7 +47,10 @@ def _unique_component_name(prefix: str, name: str, existing: set[str]) -> str:
 
 def _unique_body_name(raw_name: str, existing: set[str]) -> str:
     """Sanitize a CAD part name into a valid, unique OpenSim body name."""
-    sanitized = "".join(char if char.isalnum() else "_" for char in raw_name).strip("_") or "body"
+    sanitized = (
+        "".join(char if char.isalnum() else "_" for char in raw_name).strip("_")
+        or "body"
+    )
     if sanitized[0].isdigit():
         sanitized = f"body_{sanitized}"
     candidate = sanitized
@@ -208,30 +211,53 @@ class OpenSimModel:
         RuntimeError
             If the ``pythonocc-core`` (``OCC``) package is not installed.
         """
-        from ._cad_import import _read_step_solids, _solid_mass_properties, _write_solid_mesh
+        from ._cad_import import (
+            _read_step_solids,
+            _solid_mass_properties,
+            _write_solid_mesh,
+        )
 
         step_path = Path(step_path)
         if not step_path.is_file():
             raise FileNotFoundError(step_path)
-        destination_dir = Path(mesh_dir) if mesh_dir is not None else step_path.parent / f"{step_path.stem}_meshes"
+        destination_dir = (
+            Path(mesh_dir)
+            if mesh_dir is not None
+            else step_path.parent / f"{step_path.stem}_meshes"
+        )
         destination_dir.mkdir(parents=True, exist_ok=True)
 
         model = cls(model_path=None)
+        model.opensim.ModelVisualizer.addDirToGeometrySearchPaths(
+            str(destination_dir.resolve())
+        )
         used_names: set[str] = set()
         for part_name, solid in _read_step_solids(step_path):
             body_name = _unique_body_name(part_name, used_names)
             used_names.add(body_name)
             part_density = (densities or {}).get(part_name, density)
-            mass, center_of_mass, inertia = _solid_mass_properties(solid, part_density)
+            mass, center_of_mass, inertia = _solid_mass_properties(
+                solid,
+                part_density,
+            )
 
-            mesh_path = destination_dir / f"{body_name}.stl"
-            _write_solid_mesh(solid, center_of_mass, mesh_path, linear_deflection, angular_deflection)
+            mesh_paths = _write_solid_mesh(
+                solid,
+                center_of_mass,
+                destination_dir / f"{body_name}.stl",
+                linear_deflection,
+                angular_deflection,
+            )
 
             body = model.opensim.Body(
-                body_name, mass, model.opensim.Vec3(0, 0, 0), model.opensim.Inertia(*inertia)
+                body_name,
+                mass,
+                model.opensim.Vec3(0, 0, 0),
+                model.opensim.Inertia(*inertia),
             )
-            body.attachGeometry(model.opensim.Mesh(mesh_path.name))
             model.model.addBody(body)
+            for mesh_path in mesh_paths:
+                body.attachGeometry(model.opensim.Mesh(mesh_path.name))
 
             if add_free_joints:
                 joint = model.opensim.FreeJoint(
@@ -424,7 +450,9 @@ class OpenSimModel:
         """
         return bool(self.coordinate(name).get_locked())
 
-    def set_coordinate_range(self, name: str, min_degrees: float, max_degrees: float) -> None:
+    def set_coordinate_range(
+        self, name: str, min_degrees: float, max_degrees: float
+    ) -> None:
         """Set the allowed range of motion of a coordinate, in degrees.
 
         Parameters
@@ -552,12 +580,18 @@ class OpenSimModel:
             New pennation angle. Must be finite and within ``[0, 90)``.
         """
         if not np.isfinite(degrees) or not (0.0 <= degrees < 90.0):
-            raise ValueError("pennation angle must be a finite value in [0, 90) degrees")
-        self.muscle(name).setPennationAngleAtOptimalFiberLength(float(np.deg2rad(degrees)))
+            raise ValueError(
+                "pennation angle must be a finite value in [0, 90) degrees"
+            )
+        self.muscle(name).setPennationAngleAtOptimalFiberLength(
+            float(np.deg2rad(degrees))
+        )
 
     def muscle_pennation_angle(self, name: str) -> float:
         """Return a muscle's pennation angle at optimal fiber length, in degrees."""
-        return float(np.rad2deg(self.muscle(name).getPennationAngleAtOptimalFiberLength()))
+        return float(
+            np.rad2deg(self.muscle(name).getPennationAngleAtOptimalFiberLength())
+        )
 
     @staticmethod
     def _positive(value: float) -> float:
@@ -592,7 +626,9 @@ class OpenSimModel:
         self.model.scale(self.state, scale_set, True)
         self.state = self.model.initSystem()
 
-    def export(self, model_path: str | Path, *, geometry_dir_name: str = "Geometry") -> Path:
+    def export(
+        self, model_path: str | Path, *, geometry_dir_name: str = "Geometry"
+    ) -> Path:
         """Save the current model, including scaling and posture, as ``.osim``.
 
         OpenSim keeps coordinate values in the ``State`` rather than in the
@@ -705,9 +741,14 @@ class OpenSimModel:
         try:
             self.state = self.model.initSystem()
             self._visualizer = self.model.getVisualizer()
-            search_dirs = (*self._geometry_dirs, *([Path(geometry_path)] if geometry_path else []))
+            search_dirs = (
+                *self._geometry_dirs,
+                *([Path(geometry_path)] if geometry_path else []),
+            )
             for directory in search_dirs:
-                self._visualizer.addDirToGeometrySearchPaths(str(Path(directory).resolve()))
+                self._visualizer.addDirToGeometrySearchPaths(
+                    str(Path(directory).resolve())
+                )
             self._restore_coordinate_values(coordinates)
             self._visualizer.show(self.state)
         except Exception as error:
@@ -762,7 +803,9 @@ class OpenSimModel:
             If ``other`` is not an ``OpenSimModel``.
         """
         if not isinstance(other, OpenSimModel):
-            raise TypeError(f"other must be an OpenSimModel, got {type(other).__name__!r}")
+            raise TypeError(
+                f"other must be an OpenSimModel, got {type(other).__name__!r}"
+            )
 
         prefix = name or type(other).__name__.lower()
         source = other.model
@@ -776,7 +819,9 @@ class OpenSimModel:
                 ground_child_joints.add(joint.getName())
 
         existing_names = {
-            set_key: {item.getName() for item in _iter_set(getattr(self.model, getter)())}
+            set_key: {
+                item.getName() for item in _iter_set(getattr(self.model, getter)())
+            }
             for set_key, getter in self._MERGE_SETS
         }
 
@@ -790,8 +835,12 @@ class OpenSimModel:
                 original_name = clone.getName()
                 final_name = original_name
                 if final_name in existing_names[set_key]:
-                    final_name = _unique_component_name(prefix, original_name, existing_names[set_key])
-                    renamed_paths[f"/{set_key}/{original_name}"] = f"/{set_key}/{final_name}"
+                    final_name = _unique_component_name(
+                        prefix, original_name, existing_names[set_key]
+                    )
+                    renamed_paths[f"/{set_key}/{original_name}"] = (
+                        f"/{set_key}/{final_name}"
+                    )
                     clone.setName(final_name)
                 existing_names[set_key].add(final_name)
                 clones[set_key].append(clone)
@@ -811,16 +860,24 @@ class OpenSimModel:
             _patch_sockets(self.model, renamed_paths)
 
         if ground_parent_joints or ground_child_joints:
-            anchor_name = _unique_component_name(prefix, "ground_anchor", self._anchor_names)
+            anchor_name = _unique_component_name(
+                prefix, "ground_anchor", self._anchor_names
+            )
             self._anchor_names.add(anchor_name)
-            anchor = self.opensim.PhysicalOffsetFrame(anchor_name, self.model.getGround(), self.opensim.Transform())
+            anchor = self.opensim.PhysicalOffsetFrame(
+                anchor_name, self.model.getGround(), self.opensim.Transform()
+            )
             self.model.addComponent(anchor)
             anchor.thisown = False
             anchor_path = f"/{anchor_name}"
             for original_name in ground_parent_joints:
-                joint_clones_by_original_name[original_name].updSocket("parent_frame").setConnecteePath(anchor_path)
+                joint_clones_by_original_name[original_name].updSocket(
+                    "parent_frame"
+                ).setConnecteePath(anchor_path)
             for original_name in ground_child_joints:
-                joint_clones_by_original_name[original_name].updSocket("child_frame").setConnecteePath(anchor_path)
+                joint_clones_by_original_name[original_name].updSocket(
+                    "child_frame"
+                ).setConnecteePath(anchor_path)
             # The anchor frame is not tracked for removal: it is cheap to leave
             # orphaned after remove_model and OpenSim tolerates unused frames.
 
@@ -845,17 +902,23 @@ class OpenSimModel:
             If ``other`` was never merged into this model.
         """
         if not isinstance(other, OpenSimModel):
-            raise TypeError(f"other must be an OpenSimModel, got {type(other).__name__!r}")
+            raise TypeError(
+                f"other must be an OpenSimModel, got {type(other).__name__!r}"
+            )
         manifest = self._merged.pop(id(other), None)
         if manifest is None:
-            raise ValueError("other was not previously merged into this model with add_model")
+            raise ValueError(
+                "other was not previously merged into this model with add_model"
+            )
 
         # Dependents (forces/markers/constraints/...) must be removed before the
         # joints and bodies they reference, otherwise OpenSim crashes natively
         # instead of raising a catchable error.
         for set_key, getter in reversed(self._MERGE_SETS):
             target_set = getattr(self.model, getter)()
-            names = [component_name for key, component_name in manifest if key == set_key]
+            names = [
+                component_name for key, component_name in manifest if key == set_key
+            ]
             for component_name in names:
                 index = target_set.getIndex(component_name)
                 if index >= 0:
@@ -876,7 +939,9 @@ class OpenSimModel:
             If ``other`` is not an ``OpenSimModel``.
         """
         if not isinstance(other, OpenSimModel):
-            raise TypeError(f"other must be an OpenSimModel, got {type(other).__name__!r}")
+            raise TypeError(
+                f"other must be an OpenSimModel, got {type(other).__name__!r}"
+            )
         combined = OpenSimModel(model_path=None)
         combined.add_model(self)
         combined.add_model(other)
@@ -891,5 +956,7 @@ class OpenSimModel:
             If ``other`` is not an ``OpenSimModel``.
         """
         if not isinstance(other, OpenSimModel):
-            raise TypeError(f"other must be an OpenSimModel, got {type(other).__name__!r}")
+            raise TypeError(
+                f"other must be an OpenSimModel, got {type(other).__name__!r}"
+            )
         return other.__add__(self)

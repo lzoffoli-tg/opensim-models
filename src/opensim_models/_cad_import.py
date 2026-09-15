@@ -7,6 +7,7 @@ is actually called.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -195,19 +196,81 @@ def _solid_mass_properties(solid: Any, density: float) -> tuple[float, tuple[flo
     return mass, center_of_mass, inertia
 
 
+# Simbody's visualizer protocol refuses to draw a DecorativeMesh with more
+# than this many vertices (VisualizerProtocol::drawPolygonalMesh), so a
+# tessellation denser than this is unusable by :meth:`OpenSimModel.show`.
+_MAX_VISUALIZER_MESH_VERTICES = 65535
+
+
+def _mesh_vertex_count(shape: Any) -> int:
+    """Return the STL vertex count (3 per triangle, unshared) across ``shape``'s faces.
+
+    STL has no vertex indexing, so each triangle contributes its own 3
+    vertices -- this is what the Simbody visualizer counts against its
+    :data:`_MAX_VISUALIZER_MESH_VERTICES` cap, not OCC's deduplicated
+    per-face triangulation node count.
+    """
+    from OCC.Core.BRep import BRep_Tool
+    from OCC.Core.TopAbs import TopAbs_FACE
+    from OCC.Core.TopExp import TopExp_Explorer
+    from OCC.Core.TopLoc import TopLoc_Location
+
+    total = 0
+    explorer = TopExp_Explorer(shape, TopAbs_FACE)
+    while explorer.More():
+        location = TopLoc_Location()
+        triangulation = BRep_Tool.Triangulation(explorer.Current(), location)
+        if triangulation is not None:
+            total += 3 * triangulation.NbTriangles()
+        explorer.Next()
+    return total
+
+
+def _split_stl_by_facet_count(stl_path: Path, max_vertices: int) -> list[Path]:
+    """Split an ASCII STL into sibling files with at most ``max_vertices // 3`` facets each.
+
+    Used when a single tessellation has more facets than Simbody's
+    visualizer can display in one ``DecorativeMesh``: some parts (many small
+    faces, e.g. numerous holes/fillets) can't be brought under that cap by
+    coarsening deflection alone, since each face still needs a minimum
+    triangle count. Splitting loses no geometry -- it only distributes the
+    same triangles across multiple mesh files/geometries on the same body.
+    """
+    facets = re.findall(r"facet normal.*?endfacet\n?", stl_path.read_text(), re.S)
+    max_facets = max(1, max_vertices // 3)
+    if len(facets) <= max_facets:
+        return [stl_path]
+
+    paths = []
+    for index in range(0, len(facets), max_facets):
+        chunk = facets[index : index + max_facets]
+        chunk_path = (
+            stl_path if index == 0 else stl_path.with_stem(f"{stl_path.stem}_{index // max_facets + 1}")
+        )
+        chunk_path.write_text(f"solid {stl_path.stem}\n" + "".join(chunk) + "endsolid\n")
+        paths.append(chunk_path)
+    return paths
+
+
 def _write_solid_mesh(
     solid: Any,
     center_of_mass: tuple[float, float, float],
     destination_path: str | Path,
     linear_deflection: float,
     angular_deflection: float,
-) -> None:
-    """Tessellate a solid and write it as an STL mesh centred on its origin.
+) -> list[Path]:
+    """Tessellate a solid and write it as one or more STL meshes centred on its origin.
 
     The solid is translated by ``-center_of_mass`` before tessellation, so
     the resulting mesh is expressed in the body-local frame with its origin
     at the solid's centre of mass -- matching the ``mass_center = (0, 0, 0)``
     convention used when building the corresponding ``opensim.Body``.
+
+    If the resulting tessellation has more vertices than Simbody's
+    visualizer can display in a single mesh, it is split across sibling
+    files (see :func:`_split_stl_by_facet_count`); this only affects how
+    the *display* geometry is chunked, not the mass properties, which are
+    computed separately from the original solid.
 
     Parameters
     ----------
@@ -221,6 +284,11 @@ def _write_solid_mesh(
     linear_deflection, angular_deflection : float
         Tessellation tolerances (metres, radians): smaller values produce
         finer, larger meshes.
+
+    Returns
+    -------
+    list[pathlib.Path]
+        Paths of the STL file(s) written, all alongside ``destination_path``.
     """
     try:
         from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Transform
@@ -233,8 +301,12 @@ def _write_solid_mesh(
     translation = gp_Trsf()
     translation.SetTranslation(gp_Vec(-center_of_mass[0], -center_of_mass[1], -center_of_mass[2]))
     local_solid = BRepBuilderAPI_Transform(solid, translation, True).Shape()
-
     BRepMesh_IncrementalMesh(local_solid, linear_deflection, False, angular_deflection, True)
 
+    destination_path = Path(destination_path)
     writer = StlAPI_Writer()
     writer.Write(local_solid, str(destination_path))
+
+    if _mesh_vertex_count(local_solid) <= _MAX_VISUALIZER_MESH_VERTICES:
+        return [destination_path]
+    return _split_stl_by_facet_count(destination_path, _MAX_VISUALIZER_MESH_VERTICES)
