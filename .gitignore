@@ -5,4 +5,4 @@ __pycache__/
 .venv/
 opensim.log
 .vscode/
-*.code-workspace
+opensim-models.code-workspace
