@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ...model import OpenSimModel
+from ...model import OpenSimModel, import_opensim
 from ._data import DEFAULT_DATASET, resolve_reference
 from ._mapping import segment_scale_factors
 
@@ -41,6 +41,12 @@ class User(OpenSimModel):
     ):
         """Resolve anthropometry, load the base model, and scale it."""
         self._reference = resolve_reference(gender, height, percentile, dataset)
+        # Register the mesh directory before the model file is loaded: the
+        # bodies' attached Mesh geometry resolves its file immediately while
+        # the model is being built, not lazily when show() runs.
+        import_opensim().ModelVisualizer.addDirToGeometrySearchPaths(
+            str(DEFAULT_MESHES_DIR.resolve())
+        )
         super().__init__(model_path)
         self.add_geometry_directory(DEFAULT_MESHES_DIR)
         baseline = resolve_reference(self.gender, percentile=50.0, dataset=dataset)

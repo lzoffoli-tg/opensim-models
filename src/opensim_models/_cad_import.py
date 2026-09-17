@@ -196,6 +196,46 @@ def _solid_mass_properties(solid: Any, density: float) -> tuple[float, tuple[flo
     return mass, center_of_mass, inertia
 
 
+def _combine_mass_properties(
+    entries: list[tuple[float, tuple[float, float, float], tuple[float, ...]]],
+) -> tuple[float, tuple[float, float, float], tuple[float, ...]]:
+    """Combine several solids' mass properties into one rigid body's.
+
+    Parameters
+    ----------
+    entries : list[tuple[float, tuple[float, float, float], tuple[float, ...]]]
+        ``(mass, center_of_mass, inertia)`` triples, one per solid, as
+        returned by :func:`_solid_mass_properties`; ``center_of_mass`` and
+        ``inertia`` must share a common frame (e.g. the STEP file's global
+        axes).
+
+    Returns
+    -------
+    tuple[float, tuple[float, float, float], tuple[float, ...]]
+        ``(total_mass, combined_center_of_mass, combined_inertia)``, with
+        ``combined_inertia`` -- ``(Ixx, Iyy, Izz, Ixy, Ixz, Iyz)`` -- taken
+        about ``combined_center_of_mass`` by shifting each solid's tensor
+        there with the parallel-axis theorem before summing.
+    """
+    total_mass = sum(mass for mass, _, _ in entries)
+    combined_com = tuple(
+        sum(mass * com[axis] for mass, com, _ in entries) / total_mass for axis in range(3)
+    )
+
+    ixx = iyy = izz = ixy = ixz = iyz = 0.0
+    for mass, com, inertia in entries:
+        dx, dy, dz = (com[axis] - combined_com[axis] for axis in range(3))
+        i_xx, i_yy, i_zz, i_xy, i_xz, i_yz = inertia
+        ixx += i_xx + mass * (dy**2 + dz**2)
+        iyy += i_yy + mass * (dx**2 + dz**2)
+        izz += i_zz + mass * (dx**2 + dy**2)
+        ixy += i_xy - mass * dx * dy
+        ixz += i_xz - mass * dx * dz
+        iyz += i_yz - mass * dy * dz
+
+    return total_mass, combined_com, (ixx, iyy, izz, ixy, ixz, iyz)
+
+
 # Simbody's visualizer protocol refuses to draw a DecorativeMesh with more
 # than this many vertices (VisualizerProtocol::drawPolygonalMesh), so a
 # tessellation denser than this is unusable by :meth:`OpenSimModel.show`.

@@ -235,23 +235,27 @@ scene.remove_model(equipment_model)  # torna allo stato precedente
 
 ## Costruire un modello da CAD (.step/.stp)
 
-`OpenSimModel.from_step` costruisce un modello direttamente da un assieme CAD in formato STEP, generando un corpo OpenSim per ogni solido trovato nel file:
+`OpenSimModel.from_step` costruisce un modello direttamente da un assieme CAD in formato STEP. Per default (`as_one_object=True`) tutti i solidi del file vengono saldati in un unico corpo OpenSim, con massa/inerzia combinate; con `as_one_object=False` genera invece un corpo per ogni solido trovato nel file, come nelle versioni precedenti:
 
 ```python
 from opensim_models import OpenSimModel
 
 model = OpenSimModel.from_step("assieme.step", density=2700.0)  # es. alluminio, kg/m^3
 
-print(model.bodies.getSize())   # un body per solido/parte nominata nel file
+print(model.bodies.getSize())   # 1: tutti i solidi combinati in un unico corpo
 model.show()
 model.export("assieme.osim")
+
+# Un corpo per ogni solido/parte, come nel comportamento storico:
+model_per_parte = OpenSimModel.from_step("assieme.step", density=2700.0, as_one_object=False)
+print(model_per_parte.bodies.getSize())   # un body per solido/parte nominata nel file
 ```
 
 Per ogni solido:
 
-- il nome del corpo OpenSim viene ricavato dal nome della parte/prodotto nel file STEP (quando presente), altrimenti da un nome generico (`body_0`, `body_1`, ...);
-- massa e tensore d'inerzia sono calcolati dal volume del solido moltiplicato per la densità (`density`, oppure per parte tramite `densities={"nome_parte": ...}`); un file STEP puro raramente porta informazioni di materiale, quindi il valore di default (`1000.0` kg/m³) è solo un segnaposto generico;
-- viene generata e scritta su disco una mesh triangolare del solido (in `mesh_dir`, di default una cartella `{nome_file}_meshes` accanto al file STEP), centrata sul baricentro del solido e collegata al corpo come geometria;
+- il nome del corpo OpenSim (in modalità `as_one_object=False`) viene ricavato dal nome della parte/prodotto nel file STEP (quando presente), altrimenti da un nome generico (`body_0`, `body_1`, ...); in modalità `as_one_object=True` il corpo unico prende il nome del file STEP;
+- massa e tensore d'inerzia sono calcolati dal volume del solido moltiplicato per la densità (`density`, oppure per parte tramite `densities={"nome_parte": ...}`); un file STEP puro raramente porta informazioni di materiale, quindi il valore di default (`1000.0` kg/m³) è solo un segnaposto generico. In modalità `as_one_object=True` la massa, il baricentro e il tensore d'inerzia di ciascun solido vengono combinati (teorema degli assi paralleli) in un'unica massa/inerzia per il corpo combinato;
+- viene generata e scritta su disco una mesh triangolare del solido (in `mesh_dir`, di default una cartella `{nome_file}_meshes` accanto al file STEP) e collegata al corpo come geometria; in modalità `as_one_object=False` è centrata sul baricentro del singolo solido, in modalità `as_one_object=True` sul baricentro combinato dell'intero assieme (più mesh, una per solido, collegate allo stesso corpo);
 - l'unità dichiarata nel file STEP (millimetri, centimetri, pollici, ...) viene convertita automaticamente in metri.
 
 Un assieme CAD non contiene alcuna informazione cinematica: per poter caricare e simulare subito il modello, ogni corpo viene per default collegato al `ground` con un `FreeJoint` (6 gradi di libertà) posizionato nella collocazione originale del CAD (`add_free_joints=True`). Questi giunti sono un default di comodo, non la catena cinematica reale dell'assieme: vanno sostituiti con i giunti corretti prima di usare il modello per una simulazione dinamica. Con `add_free_joints=False` i corpi vengono aggiunti senza giunti; sarà poi necessario collegarli manualmente e richiamare `model.model.initSystem()`.
@@ -266,7 +270,7 @@ python -m pytest -q
 
 - `tests/test_model.py` copre `OpenSimModel` in modo esaustivo: caricamento (da file, vuoto, file mancante), sblocco delle coordinate, accessori nominati, gestione di coordinate/marker/muscoli, scaling, export (inclusa la copia delle mesh in `Geometry/`), cartelle di geometria e l'intera composizione di modelli (`add_model`, `remove_model`, `__add__`, `__radd__`, rinomina automatica sulle collisioni, controlli di tipo).
 - `tests/test_user.py` copre `User` in modo esaustivo: caricamento e validazione dei dati ANSUR (eseguibili anche senza OpenSim installato), risoluzione di percentile/altezza, scaling antropometrico, ogni singolo setter di postura, e l'integrazione con la facade ereditata da `OpenSimModel`.
-- `tests/test_cad_import.py` copre `OpenSimModel.from_step`: massa/inerzia calcolate correttamente da un solido di riferimento (con conversione di unità), generazione della mesh, giunti verso ground di default e relativi errori (file mancante, STEP senza solidi).
+- `tests/test_cad_import.py` copre `OpenSimModel.from_step`: massa/inerzia calcolate correttamente da un solido di riferimento (con conversione di unità), generazione della mesh, giunti verso ground di default, combinazione di più solidi in un unico corpo (`as_one_object`, di default e disattivata) e relativi errori (file mancante, STEP senza solidi).
 
 I test che richiedono i binding OpenSim vengono saltati automaticamente se il modulo `opensim` non è importabile; quelli di `test_cad_import.py` vengono saltati se `pythonocc-core` non è importabile; i test sui soli dati ANSUR restano eseguibili in ogni caso.
 

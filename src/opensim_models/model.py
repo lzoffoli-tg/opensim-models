@@ -158,19 +158,27 @@ class OpenSimModel:
         add_free_joints: bool = True,
         linear_deflection: float = 0.5e-3,
         angular_deflection: float = 0.25,
+        as_one_object: bool = True,
     ) -> "OpenSimModel":
-        """Build a model from a CAD assembly, generating a body per solid.
+        """Build a model from a CAD assembly.
 
-        Each solid found in the STEP file becomes an ``opensim.Body`` whose
-        mass and inertia tensor are derived from its geometry (volume times
-        ``density``), with a triangulated mesh of the solid written to disk
-        and attached to the body. Because a plain CAD assembly carries no
-        kinematic information, every body is (by default) connected to
-        ground with a 6-dof :class:`opensim.FreeJoint` placed at the solid's
-        original position, so the model loads and simulates immediately with
-        the assembly's original layout; replace those joints with the
-        assembly's real kinematic chain before relying on the model's
-        dynamics.
+        By default (``as_one_object=True``), every solid found in the STEP
+        file is welded into a single rigid ``opensim.Body``: their masses,
+        centres of mass and inertia tensors are combined (parallel-axis
+        theorem) into one set of mass properties, and each solid's
+        triangulated mesh is attached to that one body. With
+        ``as_one_object=False``, each solid instead becomes its own
+        ``opensim.Body``, as in previous versions of this method.
+
+        In both cases, mass and inertia come from each solid's geometry
+        (volume times ``density``), a triangulated mesh of each solid is
+        written to disk and attached to its body, and, because a plain CAD
+        assembly carries no kinematic information, bodies are (by default)
+        connected to ground with 6-dof :class:`opensim.FreeJoint`\\ s placed
+        at the assembly's original position, so the model loads and
+        simulates immediately with the assembly's original layout; replace
+        those joints with the assembly's real kinematic chain before relying
+        on the model's dynamics.
 
         Parameters
         ----------
@@ -196,11 +204,17 @@ class OpenSimModel:
         linear_deflection, angular_deflection : float, optional
             Tessellation tolerances (metres, radians) forwarded to the mesh
             generator; smaller values produce finer, larger meshes.
+        as_one_object : bool, optional
+            When ``True`` (default), combine every solid into a single
+            ``opensim.Body`` regardless of how many solids/components the
+            STEP file contains. When ``False``, generate one body per solid.
 
         Returns
         -------
         OpenSimModel
-            Model containing one body per solid found in the STEP file.
+            Model containing either one combined body (``as_one_object=True``)
+            or one body per solid found in the STEP file
+            (``as_one_object=False``).
 
         Raises
         ------
@@ -212,6 +226,7 @@ class OpenSimModel:
             If the ``pythonocc-core`` (``OCC``) package is not installed.
         """
         from ._cad_import import (
+            _combine_mass_properties,
             _read_step_solids,
             _solid_mass_properties,
             _write_solid_mesh,
@@ -232,23 +247,19 @@ class OpenSimModel:
             str(destination_dir.resolve())
         )
         used_names: set[str] = set()
+        parts = []
         for part_name, solid in _read_step_solids(step_path):
-            body_name = _unique_body_name(part_name, used_names)
-            used_names.add(body_name)
+            unique_name = _unique_body_name(part_name, used_names)
+            used_names.add(unique_name)
             part_density = (densities or {}).get(part_name, density)
-            mass, center_of_mass, inertia = _solid_mass_properties(
-                solid,
-                part_density,
-            )
+            mass, center_of_mass, inertia = _solid_mass_properties(solid, part_density)
+            parts.append((unique_name, solid, mass, center_of_mass, inertia))
 
-            mesh_paths = _write_solid_mesh(
-                solid,
-                center_of_mass,
-                destination_dir / f"{body_name}.stl",
-                linear_deflection,
-                angular_deflection,
+        if as_one_object:
+            body_name = _unique_body_name(step_path.stem, set())
+            mass, center_of_mass, inertia = _combine_mass_properties(
+                [(mass, com, inertia) for _, _, mass, com, inertia in parts]
             )
-
             body = model.opensim.Body(
                 body_name,
                 mass,
@@ -256,8 +267,16 @@ class OpenSimModel:
                 model.opensim.Inertia(*inertia),
             )
             model.model.addBody(body)
-            for mesh_path in mesh_paths:
-                body.attachGeometry(model.opensim.Mesh(mesh_path.name))
+            for part_name, solid, _, _, _ in parts:
+                mesh_paths = _write_solid_mesh(
+                    solid,
+                    center_of_mass,
+                    destination_dir / f"{body_name}_{part_name}.stl",
+                    linear_deflection,
+                    angular_deflection,
+                )
+                for mesh_path in mesh_paths:
+                    body.attachGeometry(model.opensim.Mesh(mesh_path.name))
 
             if add_free_joints:
                 joint = model.opensim.FreeJoint(
@@ -270,6 +289,37 @@ class OpenSimModel:
                     model.opensim.Vec3(0, 0, 0),
                 )
                 model.model.addJoint(joint)
+        else:
+            for body_name, solid, mass, center_of_mass, inertia in parts:
+                mesh_paths = _write_solid_mesh(
+                    solid,
+                    center_of_mass,
+                    destination_dir / f"{body_name}.stl",
+                    linear_deflection,
+                    angular_deflection,
+                )
+
+                body = model.opensim.Body(
+                    body_name,
+                    mass,
+                    model.opensim.Vec3(0, 0, 0),
+                    model.opensim.Inertia(*inertia),
+                )
+                model.model.addBody(body)
+                for mesh_path in mesh_paths:
+                    body.attachGeometry(model.opensim.Mesh(mesh_path.name))
+
+                if add_free_joints:
+                    joint = model.opensim.FreeJoint(
+                        f"{body_name}_joint",
+                        model.model.getGround(),
+                        model.opensim.Vec3(*center_of_mass),
+                        model.opensim.Vec3(0, 0, 0),
+                        body,
+                        model.opensim.Vec3(0, 0, 0),
+                        model.opensim.Vec3(0, 0, 0),
+                    )
+                    model.model.addJoint(joint)
 
         if add_free_joints:
             model.model.finalizeConnections()
