@@ -1,6 +1,10 @@
 import math
+import sys
+from pathlib import Path
 
 import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from opensim_models import Screen
 from opensim_models.models.screen.screen import (
@@ -121,6 +125,17 @@ def test_instances_are_backed_by_independent_opensim_models():
     assert small.model.getBodySet().get("screen_panel").get_mass() != pytest.approx(
         large.model.getBodySet().get("screen_panel").get_mass()
     )
+
+
+def test_copy_preserves_type_and_parameters_without_a_screen_override():
+    screen = Screen(width_mm=500.0, height_mm=300.0, center_x=1.0)
+
+    duplicate = screen.copy()
+
+    assert type(duplicate) is Screen
+    assert duplicate.width_mm == 500.0
+    assert duplicate.center_x == 1.0
+    assert duplicate.model is not screen.model
 
 
 # ---------------------------------------------------------------------------

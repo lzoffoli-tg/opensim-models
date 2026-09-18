@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 import sys
@@ -29,6 +30,25 @@ def _ensure_visualizer_dll_path() -> None:
     path_entries = os.environ.get("PATH", "").split(os.pathsep)
     if str(library_bin) not in path_entries:
         os.environ["PATH"] = str(library_bin) + os.pathsep + os.environ.get("PATH", "")
+
+
+def _register_geometry_search_path(opensim: Any, directory: str | Path) -> None:
+    """Register ``directory`` with OpenSim's own native mesh file search.
+
+    A ``Mesh`` resolves its file immediately when its owning component's
+    properties are finalized (e.g. right when ``attachGeometry`` runs, or
+    while a ``.osim`` file with existing mesh-bearing bodies is being
+    loaded) -- not lazily when the model is later shown. This must
+    therefore run *before* that finalization, which is also before an
+    :class:`OpenSimModel` may exist to call yet (see
+    ``models.user.User.__init__``, which loads a ``.osim`` file with
+    existing meshes and so must register this ahead of
+    ``super().__init__()``) -- hence a free function taking the ``opensim``
+    module directly, rather than a method requiring ``self.opensim``.
+    :meth:`OpenSimModel.add_geometry_directory` calls this for the common
+    case where an instance already exists.
+    """
+    opensim.ModelVisualizer.addDirToGeometrySearchPaths(str(Path(directory).resolve()))
 
 
 def _iter_set(component_set: Any) -> Any:
@@ -147,6 +167,34 @@ class OpenSimModel:
         self._merged: dict[int, list[tuple[str, str]]] = {}
         self._visualizer: Any | None = None
 
+    def copy(self) -> "OpenSimModel":
+        """Return an independent, deep copy of this model.
+
+        Copies every instance attribute -- so this works unmodified for any
+        subclass (e.g. :class:`.User` or :class:`.Screen`) without it
+        needing its own ``copy()`` override -- then replaces the parts that
+        must be independent (the underlying ``opensim.Model``, its
+        ``State``, and the mutable bookkeeping collections) with real
+        copies rather than shared references. The current posture and
+        velocities are preserved.
+
+        Returns
+        -------
+        OpenSimModel
+            A new, independent instance of ``type(self)``.
+        """
+        self._sync_coordinate_defaults()
+
+        clone = object.__new__(type(self))
+        clone.__dict__.update(self.__dict__)
+        clone.model = self.model.clone()
+        clone.state = clone.model.initSystem()
+        clone._geometry_dirs = list(self._geometry_dirs)
+        clone._anchor_names = set(self._anchor_names)
+        clone._merged = dict(self._merged)
+        clone._visualizer = None
+        return clone
+
     @classmethod
     def from_step(
         cls,
@@ -243,9 +291,7 @@ class OpenSimModel:
         destination_dir.mkdir(parents=True, exist_ok=True)
 
         model = cls(model_path=None)
-        model.opensim.ModelVisualizer.addDirToGeometrySearchPaths(
-            str(destination_dir.resolve())
-        )
+        model.add_geometry_directory(destination_dir)
         used_names: set[str] = set()
         parts = []
         for part_name, solid in _read_step_solids(step_path):
@@ -324,7 +370,6 @@ class OpenSimModel:
         if add_free_joints:
             model.model.finalizeConnections()
             model.state = model.model.initSystem()
-        model.add_geometry_directory(destination_dir)
         return model
 
     def _unlock_coordinates(self) -> None:
@@ -378,6 +423,40 @@ class OpenSimModel:
             Matching body object.
         """
         return self.bodies.get(name)
+
+    def set_body_mass(self, name: str, kilograms: float) -> None:
+        """Set a body's mass and rebuild the system so the change takes effect.
+
+        A body's mass feeds into the multibody system's mass matrix, which
+        OpenSim builds once in ``initSystem()``: changing the property alone
+        would have no effect on dynamics until the system is rebuilt, so
+        this calls :meth:`reinitialize` afterward, preserving the current
+        posture and velocities.
+
+        Parameters
+        ----------
+        name : str
+            OpenSim body name.
+        kilograms : float
+            New mass, in kilograms. Must be strictly positive.
+
+        Raises
+        ------
+        ValueError
+            If ``kilograms`` is not finite or not strictly positive.
+        """
+        self.body(name).setMass(self._positive(kilograms))
+        self.reinitialize()
+
+    def body_mass(self, name: str) -> float:
+        """Return a body's mass, in kilograms.
+
+        Parameters
+        ----------
+        name : str
+            OpenSim body name.
+        """
+        return float(self.body(name).getMass())
 
     def joint(self, name: str) -> Any:
         """Return a joint by its OpenSim name.
@@ -442,6 +521,12 @@ class OpenSimModel:
     def set_coordinate_degrees(self, name: str, degrees: float) -> None:
         """Set a coordinate value in degrees.
 
+        This only writes the raw value into :attr:`state`; it does not
+        propagate it to anything derived (body positions, muscle lengths,
+        forces, ...). Call :meth:`update_state` before reading any derived
+        quantity, or after a batch of several ``set_*``/direct ``state``
+        edits, to bring the whole state up to date in one pass.
+
         Parameters
         ----------
         name : str
@@ -460,7 +545,6 @@ class OpenSimModel:
         if coordinate.get_locked():
             raise ValueError(f"OpenSim coordinate {name!r} is locked")
         coordinate.setValue(self.state, float(np.deg2rad(degrees)), False)
-        self.model.realizePosition(self.state)
 
     def coordinate_degrees(self, name: str) -> float:
         """Read a coordinate value converted from radians to degrees.
@@ -477,6 +561,86 @@ class OpenSimModel:
         """
         coordinate = self.coordinate(name)
         return float(np.rad2deg(coordinate.getValue(self.state)))
+
+    def set_coordinate_speed_degrees(self, name: str, degrees_per_second: float) -> None:
+        """Set a coordinate's speed (angular velocity) in degrees per second.
+
+        This only writes the raw value into :attr:`state`; it does not
+        propagate it to anything derived. Call :meth:`update_state` before
+        reading any derived quantity, or after a batch of several
+        ``set_*``/direct ``state`` edits, to bring the whole state up to
+        date in one pass.
+
+        Parameters
+        ----------
+        name : str
+            OpenSim coordinate name.
+        degrees_per_second : float
+            New coordinate speed in degrees per second.
+
+        Raises
+        ------
+        ValueError
+            If ``degrees_per_second`` is not finite.
+        """
+        if not np.isfinite(degrees_per_second):
+            raise ValueError("degrees_per_second must be finite")
+        coordinate = self.coordinate(name)
+        if coordinate.get_locked():
+            raise ValueError(f"OpenSim coordinate {name!r} is locked")
+        coordinate.setSpeedValue(self.state, float(np.deg2rad(degrees_per_second)))
+
+    def coordinate_speed_degrees(self, name: str) -> float:
+        """Read a coordinate's speed converted from radians/s to degrees/s.
+
+        Parameters
+        ----------
+        name : str
+            OpenSim coordinate name.
+
+        Returns
+        -------
+        float
+            Current coordinate speed in degrees per second.
+        """
+        coordinate = self.coordinate(name)
+        return float(np.rad2deg(coordinate.getSpeedValue(self.state)))
+
+    def update_state(self) -> None:
+        """Propagate every raw value set on :attr:`state` to derived quantities.
+
+        Coordinate/speed setters (and any direct edit of ``model.state``,
+        e.g. through OpenSim's own API) only write the raw value; nothing
+        derived -- body positions, muscle-tendon lengths and forces,
+        muscle equilibrium -- is recomputed until this is realized.
+        Calling this once after a batch of edits is both correct and more
+        efficient than realizing after every single edit.
+
+        This realizes through ``Stage::Dynamics`` (covering position,
+        velocity and every force, including automatically re-solving
+        muscle equilibrium via ``equilibrateMuscles`` -- see the muscle
+        section of the README for why that step is needed after a posture
+        change). It deliberately stops short of ``Stage::Acceleration``:
+        that stage is not reliably safe to realize on every OpenSim model
+        (it can crash the process outright on some muscle-driven models,
+        a native failure Python cannot catch or prevent). If you need
+        accelerations, call ``model.model.realizeAcceleration(model.state)``
+        yourself, aware of that risk.
+
+        Does *not* re-solve a :class:`opensim.CoordinateCouplerConstraint`
+        (e.g. a patella coupled to knee flexion): realizing stages does not
+        make Simbody re-derive a dependent coordinate's value from its
+        independent one -- that requires ``Model.assemble()``, which is
+        also not reliably safe to call on every model (same class of native
+        crash risk). If a coupled coordinate must reflect a new posture for
+        actual use (not just export), use :meth:`reinitialize` instead,
+        which re-derives it through the coordinate's *default* value.
+        """
+        self.model.realizePosition(self.state)
+        self.model.realizeVelocity(self.state)
+        if self.muscles.getSize() > 0:
+            self.model.equilibrateMuscles(self.state)
+        self.model.realizeDynamics(self.state)
 
     def set_coordinate_locked(self, name: str, locked: bool) -> None:
         """Lock or unlock a coordinate.
@@ -649,6 +813,92 @@ class OpenSimModel:
             raise ValueError(f"value must be strictly positive, got {value!r}")
         return float(value)
 
+    def _sync_coordinate_defaults(self) -> None:
+        """Copy every coordinate's current state value/speed into its default.
+
+        OpenSim keeps posture and velocity in the ``State``, not in the
+        model itself: any operation that rebuilds the system --
+        :meth:`export`, :meth:`scale_bodies`, :meth:`add_model`,
+        :meth:`reinitialize`, or a raw ``model.initSystem()`` call -- resets
+        every coordinate to the value/speed baked into the model file
+        otherwise. A coordinate driven by a
+        :class:`opensim.CoordinateCouplerConstraint` (e.g. a patella coupled
+        to knee flexion) is re-derived from its independent coordinates' new
+        defaults through the constraint's function, since OpenSim does not
+        do this automatically when a default value is set directly.
+        """
+        coordinates = self.coordinates
+        for index in range(coordinates.getSize()):
+            coordinate = coordinates.get(index)
+            coordinate.setDefaultValue(coordinate.getValue(self.state))
+            coordinate.setDefaultSpeedValue(coordinate.getSpeedValue(self.state))
+
+        constraints = self.model.getConstraintSet()
+        for index in range(constraints.getSize()):
+            coupler = self.opensim.CoordinateCouplerConstraint.safeDownCast(
+                constraints.get(index)
+            )
+            if coupler is None:
+                continue
+            independent_names = coupler.getIndependentCoordinateNames()
+            independent_values = self.opensim.Vector(independent_names.getSize(), 0.0)
+            for i in range(independent_names.getSize()):
+                independent = coordinates.get(independent_names.get(i))
+                independent_values.set(i, independent.getDefaultValue())
+            dependent = coordinates.get(coupler.getDependentCoordinateName())
+            dependent.setDefaultValue(coupler.getFunction().calcValue(independent_values))
+
+    def reinitialize(self) -> None:
+        """Rebuild the system state, preserving the current posture and velocity.
+
+        Some changes -- e.g. a muscle's ``ignore_tendon_compliance`` -- do
+        not touch the model's component tree, only a property, so
+        :attr:`state` remains safely readable right up until this call;
+        this reads the current posture/velocity, rebuilds the system, and
+        restores them as the new defaults.
+
+        This is *not* safe to call after adding or removing a component
+        (see :mod:`opensim_models.operators`): doing so, even to only
+        read/sync ``state``, crashes the process rather than raising a
+        catchable error, because removing/adding a body/joint/force/...
+        immediately invalidates ``state`` itself, not just its defaults.
+        Use :meth:`structural_change` to wrap that kind of change instead.
+
+        Calling ``model.model.initSystem()`` directly instead of this
+        resets every coordinate to the model's original default.
+        """
+        self._sync_coordinate_defaults()
+        self.model.finalizeConnections()
+        self.state = self.model.initSystem()
+
+    @contextlib.contextmanager
+    def structural_change(self):
+        """Context manager wrapping a batch of component additions/removals.
+
+        Adding or removing a body, joint, force/muscle, marker, constraint,
+        controller, contact geometry or probe (see
+        :mod:`opensim_models.operators`) invalidates :attr:`state`
+        immediately -- reading it afterward, even just to sync posture into
+        defaults, crashes the process rather than raising a catchable
+        error. This syncs the current posture/velocity into each
+        coordinate's default *before* the block runs (while ``state`` is
+        still valid), then rebuilds the system once the block exits,
+        restoring that posture. Wrap any number of
+        ``opensim_models.operators`` calls in one block; don't read
+        :attr:`state` (directly, or through any coordinate/marker/muscle
+        accessor) inside it.
+
+        Example
+        -------
+        >>> with model.structural_change():
+        ...     operators.remove_joint(model, "old_joint")
+        ...     operators.remove_body(model, "old_body")
+        """
+        self._sync_coordinate_defaults()
+        yield self
+        self.model.finalizeConnections()
+        self.state = self.model.initSystem()
+
     def scale_bodies(self, factors: dict[str, tuple[float, float, float]]) -> None:
         """Scale the complete model through OpenSim's native ScaleSet pipeline.
 
@@ -674,6 +924,7 @@ class OpenSimModel:
             scale.setApply(True)
             scale_set.adoptAndAppend(scale)
         self.model.scale(self.state, scale_set, True)
+        self._sync_coordinate_defaults()
         self.state = self.model.initSystem()
 
     def export(
@@ -682,9 +933,11 @@ class OpenSimModel:
         """Save the current model, including scaling and posture, as ``.osim``.
 
         OpenSim keeps coordinate values in the ``State`` rather than in the
-        model itself, so each coordinate's default value is synced from the
-        current state before serializing; otherwise the exported file would
-        reopen in the model's original, unposed configuration.
+        model itself, so each coordinate's default value (and, for a
+        coupled coordinate such as a patella, its dependent default) is
+        synced from the current state before serializing; otherwise the
+        exported file would reopen in the model's original, unposed
+        configuration.
 
         Any mesh referenced by an attached body geometry is also copied next
         to the exported file, under ``geometry_dir_name`` -- the folder name
@@ -704,10 +957,7 @@ class OpenSimModel:
         pathlib.Path
             Path to the written file.
         """
-        coordinates = self.coordinates
-        for index in range(coordinates.getSize()):
-            coordinate = coordinates.get(index)
-            coordinate.setDefaultValue(coordinate.getValue(self.state))
+        self._sync_coordinate_defaults()
         destination = Path(model_path)
         self.model.printToXML(str(destination))
         self._export_mesh_files(destination.parent / geometry_dir_name)
@@ -749,13 +999,21 @@ class OpenSimModel:
             shutil.copy2(source, destination)
 
     def add_geometry_directory(self, directory: str | Path) -> None:
-        """Register a directory to search for mesh geometry files on :meth:`show`.
+        """Register a directory to search for mesh geometry files.
+
+        Registers ``directory`` both with OpenSim's own native mesh search
+        (so a ``Mesh`` attached/loaded after this call resolves its file
+        immediately, not just lazily on :meth:`show`) and in this
+        instance's own directory list (used by :meth:`show` to extend the
+        visualizer's search path, and returned by
+        :attr:`geometry_directories`).
 
         Parameters
         ----------
         directory : str or pathlib.Path
-            Directory containing VTP (or other) geometry files.
+            Directory containing VTP/STL/OBJ (or other) geometry files.
         """
+        _register_geometry_search_path(self.opensim, directory)
         self._geometry_dirs.append(Path(directory))
 
     @property
@@ -834,10 +1092,13 @@ class OpenSimModel:
         """Merge another model's components into this one, in place.
 
         Colliding component names are renamed with an automatic prefix in
-        the copy so both models coexist; ``other`` itself is never modified.
-        Joints anchored to ``other``'s ground stay anchored to this model's
-        own shared ground, so both models keep their original default
-        placement in the combined model.
+        the copy so both models coexist; ``other`` itself is never modified
+        (its own coordinate defaults are updated to match its current
+        posture/velocity, as a side effect of building a correct clone, but
+        its ``State`` and every other component are left untouched). Joints
+        anchored to ``other``'s ground stay anchored to this model's own
+        shared ground, so both models keep their original default placement
+        in the combined model.
 
         Parameters
         ----------
@@ -856,6 +1117,12 @@ class OpenSimModel:
             raise TypeError(
                 f"other must be an OpenSimModel, got {type(other).__name__!r}"
             )
+
+        # Joints own their coordinates, so other's posture/velocity must be
+        # baked into each coordinate's default *before* cloning below, or
+        # the clones would revert to the original, unposed model defaults.
+        other._sync_coordinate_defaults()
+        self._sync_coordinate_defaults()
 
         prefix = name or type(other).__name__.lower()
         source = other.model
@@ -960,6 +1227,11 @@ class OpenSimModel:
             raise ValueError(
                 "other was not previously merged into this model with add_model"
             )
+
+        # Must run before any component is removed below: reading self.state
+        # against a Model whose structure has already changed (components
+        # removed) crashes natively instead of raising a catchable error.
+        self._sync_coordinate_defaults()
 
         # Dependents (forces/markers/constraints/...) must be removed before the
         # joints and bodies they reference, otherwise OpenSim crashes natively

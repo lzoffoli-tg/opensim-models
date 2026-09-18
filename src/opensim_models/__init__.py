@@ -1,9 +1,6 @@
-from .model import OpenSimModel
-from .models.screen import Screen
-from .models.user import User
+"""opensim_models init module"""
 
-__all__ = [
-    "OpenSimModel",
-    "Screen",
-    "User",
-]
+from .model import *
+from .models import *
+from .operators import *
+from .ergonomy import *

@@ -1,4 +1,2 @@
-from .screen import Screen
-from .user import User
-
-__all__ = ["Screen", "User"]
+from .screen import *
+from .user import *

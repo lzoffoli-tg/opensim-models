@@ -1,8 +1,11 @@
+import sys
 import tempfile
 from pathlib import Path
 
 import numpy as np
 import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from opensim_models import OpenSimModel
 
@@ -83,6 +86,101 @@ def test_instances_loaded_from_the_same_file_are_independent():
 
 
 # ---------------------------------------------------------------------------
+# copy()
+# ---------------------------------------------------------------------------
+
+
+def test_copy_returns_an_instance_of_the_same_type():
+    model = make_model()
+
+    assert type(model.copy()) is type(model)
+
+
+def test_copy_is_backed_by_an_independent_opensim_model():
+    model = make_model()
+
+    duplicate = model.copy()
+
+    assert duplicate.model is not model.model
+    duplicate.set_coordinate_degrees("hip_flexion_r", 25.0)
+    assert model.coordinate_degrees("hip_flexion_r") == pytest.approx(0.0)
+
+
+def test_copy_preserves_posture_and_speed():
+    model = make_model()
+    model.set_coordinate_degrees("knee_angle_r", 90.0)
+    model.set_coordinate_speed_degrees("hip_flexion_r", 45.0)
+
+    duplicate = model.copy()
+
+    assert duplicate.coordinate_degrees("knee_angle_r") == pytest.approx(90.0)
+    assert duplicate.coordinate_speed_degrees("hip_flexion_r") == pytest.approx(45.0)
+
+
+def test_copy_preserves_a_coupled_dependent_coordinate():
+    model = make_model()
+    model.set_coordinate_degrees("knee_angle_r", 90.0)
+
+    duplicate = model.copy()
+
+    assert duplicate.coordinate_degrees("knee_angle_r_beta") == pytest.approx(90.0)
+
+
+def test_copy_carries_over_geometry_directories_independently():
+    model = make_model()
+    model.add_geometry_directory("some/dir")
+
+    duplicate = model.copy()
+    duplicate.add_geometry_directory("other/dir")
+
+    assert Path("other/dir") not in model.geometry_directories
+
+
+# ---------------------------------------------------------------------------
+# update_state()
+# ---------------------------------------------------------------------------
+
+
+def test_coordinate_setters_do_not_auto_realize():
+    model = make_model()
+    tibia = model.body("tibia_r")
+    origin = opensim.Vec3(0, 0, 0)
+    tibia.findStationLocationInGround(model.state, origin)  # baseline: works
+
+    model.set_coordinate_degrees("knee_angle_r", 90.0)
+
+    # The raw value is set immediately (no realize needed to read it back)...
+    assert model.coordinate_degrees("knee_angle_r") == pytest.approx(90.0)
+    # ...but nothing derived is recomputed: OpenSim's own cache-versioning
+    # catches this and raises rather than silently returning a stale value.
+    with pytest.raises(RuntimeError):
+        tibia.findStationLocationInGround(model.state, origin)
+
+    model.update_state()
+    tibia.findStationLocationInGround(model.state, origin)  # works again
+
+
+def test_update_state_realizes_position_and_velocity():
+    model = make_model()
+    model.set_coordinate_degrees("knee_angle_r", 90.0)
+    model.set_coordinate_speed_degrees("hip_flexion_r", 45.0)
+
+    model.update_state()
+
+    assert model.coordinate_degrees("knee_angle_r") == pytest.approx(90.0)
+    assert model.coordinate_speed_degrees("hip_flexion_r") == pytest.approx(45.0)
+
+
+def test_update_state_equilibrates_muscles_without_crashing():
+    model = make_model()
+    model.set_coordinate_degrees("knee_angle_r", 90.0)
+
+    model.update_state()  # must not raise or crash the process
+
+    assert model.muscles.getSize() > 0
+
+
+# ---------------------------------------------------------------------------
 # Named-component accessors
 # ---------------------------------------------------------------------------
 
@@ -145,6 +243,88 @@ def test_coordinate_range_rejects_non_finite_bounds():
 
     with pytest.raises(ValueError, match="finite"):
         model.set_coordinate_range("knee_angle_r", float("nan"), 5.0)
+
+
+def test_coordinate_speed_degrees_round_trip_through_radians():
+    model = make_model()
+
+    model.set_coordinate_speed_degrees("hip_flexion_r", 45.0)
+
+    assert model.coordinate_speed_degrees("hip_flexion_r") == pytest.approx(45.0)
+
+
+def test_set_coordinate_speed_degrees_rejects_non_finite_values():
+    model = make_model()
+
+    with pytest.raises(ValueError, match="finite"):
+        model.set_coordinate_speed_degrees("hip_flexion_r", float("nan"))
+
+
+def test_set_coordinate_speed_degrees_is_rejected_when_locked():
+    model = make_model()
+    model.set_coordinate_locked("knee_angle_r", True)
+
+    with pytest.raises(ValueError, match="locked"):
+        model.set_coordinate_speed_degrees("knee_angle_r", 10.0)
+
+
+# ---------------------------------------------------------------------------
+# Body properties
+# ---------------------------------------------------------------------------
+
+
+def test_body_mass_can_be_read_and_updated():
+    model = make_model()
+
+    model.set_body_mass("tibia_r", 5.0)
+
+    assert model.body_mass("tibia_r") == pytest.approx(5.0)
+
+
+def test_set_body_mass_rejects_non_positive_values():
+    model = make_model()
+
+    with pytest.raises(ValueError, match="positive"):
+        model.set_body_mass("tibia_r", 0.0)
+    with pytest.raises(ValueError, match="positive"):
+        model.set_body_mass("tibia_r", -1.0)
+
+
+def test_set_body_mass_preserves_posture():
+    model = make_model()
+    model.set_coordinate_degrees("knee_angle_r", 90.0)
+
+    model.set_body_mass("tibia_r", 5.0)
+
+    assert model.coordinate_degrees("knee_angle_r") == pytest.approx(90.0)
+
+
+# ---------------------------------------------------------------------------
+# Reinitializing the system (structural property changes)
+# ---------------------------------------------------------------------------
+
+
+def test_reinitialize_preserves_posture_and_speed():
+    model = make_model()
+    model.set_coordinate_degrees("knee_angle_r", 90.0)
+    model.set_coordinate_speed_degrees("hip_flexion_r", 45.0)
+
+    model.reinitialize()
+
+    assert model.coordinate_degrees("knee_angle_r") == pytest.approx(90.0)
+    assert model.coordinate_speed_degrees("hip_flexion_r") == pytest.approx(45.0)
+
+
+def test_reinitialize_updates_a_coupled_dependent_coordinate():
+    model = make_model()
+    # knee_angle_r_beta (the patella) is coupled to knee_angle_r via a
+    # CoordinateCouplerConstraint in the bundled Rajagopal model.
+    assert model.coordinates.contains("knee_angle_r_beta")
+
+    model.set_coordinate_degrees("knee_angle_r", 90.0)
+    model.reinitialize()
+
+    assert model.coordinate_degrees("knee_angle_r_beta") == pytest.approx(90.0)
 
 
 # ---------------------------------------------------------------------------
@@ -359,6 +539,18 @@ def test_add_model_merged_model_initializes_and_exports():
         assert reloaded.getBodySet().getSize() == 2
 
 
+def test_add_model_preserves_the_merged_operands_posture():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        base = OpenSimModel(model_path=None)
+        extra = build_single_body_model(tmp_dir, "widget", "widget_to_ground")
+        coordinate_name = extra.coordinates.get(0).getName()
+        extra.set_coordinate_degrees(coordinate_name, 30.0)
+
+        base.add_model(extra)
+
+        assert base.coordinate_degrees(coordinate_name) == pytest.approx(30.0)
+
+
 def test_add_model_carries_over_geometry_directories():
     with tempfile.TemporaryDirectory() as tmp_dir:
         base = OpenSimModel(model_path=None)
@@ -381,6 +573,17 @@ def test_add_model_then_remove_model_restores_original_state():
     assert base.joints.getSize() == 0
     assert base.muscles.getSize() == 0
     assert base.markers.getSize() == 0
+
+
+def test_remove_model_preserves_the_remaining_posture():
+    base = make_model()
+    extra = OpenSimModel(model_path=None)
+    base.set_coordinate_degrees("knee_angle_r", 90.0)
+
+    base.add_model(extra)
+    base.remove_model(extra)
+
+    assert base.coordinate_degrees("knee_angle_r") == pytest.approx(90.0)
 
 
 def test_remove_model_rejects_a_model_that_was_never_added():

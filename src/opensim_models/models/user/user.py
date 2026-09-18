@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ...model import OpenSimModel, import_opensim
+from ...model import OpenSimModel, _register_geometry_search_path, import_opensim
 from ._data import DEFAULT_DATASET, resolve_reference
 from ._mapping import segment_scale_factors
+
+__all__ = ["User"]
 
 _ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 DEFAULT_MODEL_PATH = _ASSETS_DIR / "rajagopalaiulrich2023.osim"
@@ -43,10 +45,10 @@ class User(OpenSimModel):
         self._reference = resolve_reference(gender, height, percentile, dataset)
         # Register the mesh directory before the model file is loaded: the
         # bodies' attached Mesh geometry resolves its file immediately while
-        # the model is being built, not lazily when show() runs.
-        import_opensim().ModelVisualizer.addDirToGeometrySearchPaths(
-            str(DEFAULT_MESHES_DIR.resolve())
-        )
+        # the model is being built, not lazily when show() runs. self isn't
+        # a full OpenSimModel yet (super().__init__ hasn't run), so this
+        # can't go through the self.add_geometry_directory instance method.
+        _register_geometry_search_path(import_opensim(), DEFAULT_MESHES_DIR)
         super().__init__(model_path)
         self.add_geometry_directory(DEFAULT_MESHES_DIR)
         baseline = resolve_reference(self.gender, percentile=50.0, dataset=dataset)

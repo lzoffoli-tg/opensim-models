@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-HOME = Path(__file__).absolute().parent.parent / "src" / "opensim_models"
-sys.path.append(str(HOME))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
 from opensim_models import OpenSimModel
 
 pytest.importorskip("opensim")

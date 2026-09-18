@@ -7,6 +7,8 @@ from pathlib import Path
 
 from ...model import OpenSimModel
 
+__all__ = ["Screen"]
+
 _ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 _MESHES_DIR = _ASSETS_DIR / "meshes"
 _MESH_FILENAME = "screen_panel.stl"
@@ -24,7 +26,9 @@ def _parse_ratio(ratio: str) -> tuple[float, float]:
     try:
         width_ratio, height_ratio = (float(part) for part in parts)
     except ValueError as error:
-        raise ValueError(f"Invalid aspect ratio {ratio!r}; expected e.g. '16:9'") from error
+        raise ValueError(
+            f"Invalid aspect ratio {ratio!r}; expected e.g. '16:9'"
+        ) from error
     if width_ratio <= 0 or height_ratio <= 0:
         raise ValueError(f"Invalid aspect ratio {ratio!r}; both sides must be positive")
     return width_ratio, height_ratio
@@ -67,11 +71,18 @@ def _write_box_mesh(
     lines = ["solid screen_panel"]
     for normal, quad in faces:
         points = [corner(signs) for signs in quad]
-        for triangle in ((points[0], points[1], points[2]), (points[0], points[2], points[3])):
-            lines.append(f"  facet normal {normal[0]:.6e} {normal[1]:.6e} {normal[2]:.6e}")
+        for triangle in (
+            (points[0], points[1], points[2]),
+            (points[0], points[2], points[3]),
+        ):
+            lines.append(
+                f"  facet normal {normal[0]:.6e} {normal[1]:.6e} {normal[2]:.6e}"
+            )
             lines.append("    outer loop")
             for vertex in triangle:
-                lines.append(f"      vertex {vertex[0]:.6e} {vertex[1]:.6e} {vertex[2]:.6e}")
+                lines.append(
+                    f"      vertex {vertex[0]:.6e} {vertex[1]:.6e} {vertex[2]:.6e}"
+                )
             lines.append("    endloop")
             lines.append("  endfacet")
     lines.append("endsolid screen_panel")
@@ -138,7 +149,6 @@ class Screen(OpenSimModel):
         super().__init__(model_path=None)
         _MESHES_DIR.mkdir(parents=True, exist_ok=True)
         self.add_geometry_directory(_MESHES_DIR)
-        self.opensim.ModelVisualizer.addDirToGeometrySearchPaths(str(_MESHES_DIR.resolve()))
 
         self._width_mm = width_mm
         self._height_mm = height_mm

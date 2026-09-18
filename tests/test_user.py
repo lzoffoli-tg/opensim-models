@@ -1,8 +1,11 @@
+import sys
 import tempfile
 from pathlib import Path
 
 import numpy as np
 import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from opensim_models import OpenSimModel, User
 
@@ -177,6 +180,20 @@ def test_instances_are_backed_by_independent_opensim_models():
     user_75 = make_user(gender="M", percentile=75)
 
     assert user_50.model is not user_75.model
+
+
+@requires_opensim
+def test_copy_preserves_type_and_anthropometry_without_a_user_override():
+    user = make_user(gender="F", percentile=75.0)
+    user.set_left_knee_flexionextension(90.0)
+
+    duplicate = user.copy()
+
+    assert type(duplicate) is User
+    assert duplicate.gender == "F"
+    assert duplicate.percentile == 75.0
+    assert duplicate.coordinate_degrees("knee_angle_l") == pytest.approx(90.0)
+    assert duplicate.model is not user.model
 
 
 # ---------------------------------------------------------------------------
