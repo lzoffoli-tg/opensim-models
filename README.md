@@ -1,6 +1,6 @@
 # opensim-models
 
-Package Python per costruire e comporre modelli OpenSim. `OpenSimModel` è una facade generica su un modello OpenSim (caricamento, coordinate, marker, muscoli, scaling, visualizzazione, composizione di più modelli, importazione da CAD). Le sottoclassi concrete oggi disponibili sono `User`, un utente antropometrico costruito a partire dal modello full-body di Rajagopal-Lai-Uhlrich e dai riferimenti ANSUR II, già scalato e pronto per analisi biomeccaniche, simulazioni e manipolazione della postura, e `Screen`, un pannello plexiglass parametrico (es. per rappresentare un monitor in scena).
+Package Python per costruire e comporre modelli OpenSim. `OpenSimModel` è una facade generica su un modello OpenSim (caricamento, coordinate, marker, muscoli, scaling, rotazione/traslazione rigida, visualizzazione (con riproduzione di una simulazione), composizione di più modelli, importazione da CAD). Le sottoclassi concrete oggi disponibili sono `User`, un utente antropometrico costruito a partire dal modello full-body di Rajagopal-Lai-Uhlrich e dai riferimenti ANSUR II, già scalato e pronto per analisi biomeccaniche, simulazioni e manipolazione della postura, `Screen`, un pannello plexiglass parametrico (es. per rappresentare un monitor in scena), e `Box`, un parallelepipedo rigido generico (es. per un ingombro o un componente di un attrezzo).
 
 ## Contenuto del progetto
 
@@ -21,17 +21,22 @@ src/opensim_models/
 		screen/
 			screen.py                  # Screen(OpenSimModel): pannello plexiglass parametrico
 			assets/meshes/              # mesh generata automaticamente per Screen (vedi sotto)
+		box/
+			box.py                     # Box(OpenSimModel): parallelepipedo rigido generico
+			assets/meshes/              # mesh generata automaticamente per Box (vedi sotto)
 tests/
 	test_model.py                  # test esaustivi di OpenSimModel (facade + composizione)
 	test_operators.py              # test esaustivi di opensim_models.operators
+	test_player.py                 # test della logica pura di riproduzione (opensim_models._player)
 	test_user.py                   # test esaustivi di User (dati ANSUR, scaling, postura)
 	test_screen.py                 # test esaustivi di Screen (dimensionamento, posa, mesh)
+	test_box.py                    # test esaustivi di Box (dimensioni/massa, posa live, spigoli, mesh)
 	test_cad_import.py             # test di OpenSimModel.from_step (richiede pythonocc-core)
 ```
 
-Ogni modello specifico (oggi `User` e `Screen`) vive nella propria sottocartella sotto `models/`, con il proprio codice e i propri asset. Nuovi modelli (es. un attrezzo da palestra) si aggiungono allo stesso modo, come ulteriori sottoclassi di `OpenSimModel`.
+Ogni modello specifico (oggi `User`, `Screen` e `Box`) vive nella propria sottocartella sotto `models/`, con il proprio codice e i propri asset. Nuovi modelli (es. un attrezzo da palestra) si aggiungono allo stesso modo, come ulteriori sottoclassi di `OpenSimModel`.
 
-**Superficie pubblica.** Per ogni modello, l'unico simbolo importabile è la sua sottoclasse di `OpenSimModel` (`User`, `Screen`): `from opensim_models import OpenSimModel, User, Screen` è l'API pubblica principale del package. Tutto il resto -- dataset ANSUR, funzioni di risoluzione dei percentili, mappe di scaling, lettura CAD -- è dettaglio implementativo del modello che lo usa: vive in moduli non riesportati dai vari `__init__.py` (per `User`, i moduli con prefisso `_`, come `_data.py` e `_mapping.py`) e non è pensato per essere importato direttamente. Fa eccezione `opensim_models.operators` (vedi sotto): un modulo di utilità pensato per essere importato direttamente (`from opensim_models import operators`), non riesportato al livello superiore del package per restare distinto dalle sottoclassi di modello.
+**Superficie pubblica.** Per ogni modello, l'unico simbolo importabile è la sua sottoclasse di `OpenSimModel` (`User`, `Screen`, `Box`): `from opensim_models import OpenSimModel, User, Screen, Box` è l'API pubblica principale del package. Tutto il resto -- dataset ANSUR, funzioni di risoluzione dei percentili, mappe di scaling, lettura CAD -- è dettaglio implementativo del modello che lo usa: vive in moduli non riesportati dai vari `__init__.py` (per `User`, i moduli con prefisso `_`, come `_data.py` e `_mapping.py`) e non è pensato per essere importato direttamente. Fa eccezione `opensim_models.operators` (vedi sotto): un modulo di utilità pensato per essere importato direttamente (`from opensim_models import operators`), non riesportato al livello superiore del package per restare distinto dalle sottoclassi di modello.
 
 Il modello di `User` referenzia 81 mesh VTP, tutte incluse nella cartella `models/user/assets/meshes/`. Sono presenti anche quattro alias aggiuntivi per femori e tibie.
 
@@ -507,6 +512,43 @@ screen.set_height_mm(340.0)   # passa in modalità dimensioni esplicite solo una
 
 Massa e tensore d'inerzia del pannello derivano dal suo volume (larghezza × altezza × 1 mm) assumendo una densità da plexiglass/PMMA (`1180 kg/m³`); una mesh a forma di parallelepipedo viene generata automaticamente e salvata in `models/screen/assets/meshes/screen_panel.stl`, rigenerata a ogni cambio di dimensione. Il pannello è un unico `opensim.Body` ("screen_panel") saldato al ground con un `WeldJoint` (nessun grado di libertà): la sua posa è interamente determinata da `center_x`/`center_y`/`center_z`/`angle_deg`.
 
+## Creare un parallelepipedo (Box)
+
+`Box` è un parallelepipedo rigido generico, pensato per rappresentare un oggetto/ingombro qualunque nella scena (es. un elemento di un attrezzo) quando non serve altro che la sua geometria, massa e posa:
+
+```python
+from opensim_models import Box
+
+box = Box(
+    width=0.2, height=0.4, depth=0.1,       # metri, lungo gli assi locali X/Y/Z
+    origin=(0.0, 1.0, 0.0),                 # centro nel ground frame, in metri
+    angle_deg=(0.0, 0.0, 30.0),             # Eulero X-Y-Z body-fixed, in gradi, attorno agli assi del ground
+    mass_kg=1.5,
+)
+```
+
+A differenza di `Screen`, la massa è un dato diretto (`mass_kg`, non derivata da una densità di materiale); il tensore d'inerzia resta comunque quello analitico di un parallelepipedo omogeneo pieno con quella massa e quelle dimensioni. Ogni dimensione ha una property in lettura (`width`, `height`, `depth`, `mass_kg`) e un setter dedicato (`set_width`, `set_height`, `set_depth`, `set_mass_kg`) che ricostruisce corpo, mesh e giunto -- la mesh, generata con lo stesso writer STL usato internamente da `operators.add_box_body` (`opensim_models._primitives.write_box_mesh`), viene salvata in `models/box/assets/meshes/box.stl` e rigenerata a ogni cambio di dimensione. `width`/`height`/`depth`/`mass_kg` devono essere finiti e strettamente positivi, altrimenti il costruttore (o il setter) solleva `ValueError`.
+
+`origin`/`angle_deg` impostano la posa iniziale (un `WeldJoint` verso ground), e hanno anche loro un setter dedicato (`set_origin`, `set_angle_deg`, ciascuno dei due preserva l'altra metà della posa corrente): ma a differenza delle dimensioni, le property stesse vengono sempre lette direttamente dalla posa corrente del corpo, quindi riflettono comunque l'ultima cosa che lo ha spostato -- gli argomenti del costruttore, `set_origin`/`set_angle_deg`, un setter di dimensione (che preserva la posa corrente durante la ricostruzione), oppure `rotate()`/`translate()` (ereditati da `OpenSimModel`, vedi sopra) -- tutti modi ugualmente validi per riposizionare un `Box` dopo la costruzione:
+
+```python
+box.set_angle_deg((0.0, 0.0, 0.0))           # orientamento assoluto, origine invariata
+box.rotate(box.com, (0.0, 0.0, 1.0), 90.0)   # rotazione relativa di 90° attorno al proprio centro di massa
+box.translate((0.0, 0.5, 0.0))               # traslazione relativa
+
+print(box.origin)     # riflette già tutti i passaggi sopra
+print(box.angle_deg)
+```
+
+`com` (centro di massa, calcolato con lo stesso meccanismo nativo OpenSim usato da `User.com`) coincide con `origin` per un corpo singolo e omogeneo, ma è esposto a parte proprio perché è il perno naturale per `rotate()`. `corners` restituisce le coordinate nel ground frame degli 8 spigoli del parallelepipedo (tutte le combinazioni di ±metà misura lungo gli assi locali correnti, trasformate nella posa attuale) -- anch'esso sempre coerente con l'ultima posa, utile per verifiche di ingombro/allineamento con altra geometria della scena:
+
+```python
+for corner in box.corners:
+    print(corner)
+```
+
+Come `Screen`, `Box` è un unico `opensim.Body` ("box") saldato al ground con un `WeldJoint` (nessun grado di libertà): non ha una `postura` articolare propria, è pensato per essere posizionato/orientato rigidamente, non animato internamente.
+
 ## Comporre più modelli
 
 Due o più `OpenSimModel` (ad esempio un `User` e uno `Screen`) possono essere combinati in un unico modello OpenSim esportabile:
@@ -568,6 +610,7 @@ python -m pytest -q
 - `tests/test_model.py` copre `OpenSimModel` in modo esaustivo: caricamento (da file, vuoto, file mancante), sblocco delle coordinate, accessori nominati, gestione di coordinate (posizione, velocità)/marker/muscoli/massa dei corpi, `update_state()` (propagazione a quantità derivate, comportamento "grezzo" dei setter), `reinitialize()` (inclusa la coerenza di coordinate accoppiate da un `CoordinateCouplerConstraint`), `copy()` (indipendenza del modello copiato, preservazione di postura e di attributi delle sottoclassi), scaling, export (inclusa la copia delle mesh in `Geometry/`), cartelle di geometria, `rotate()`/`translate()` (corretta delega a `operators.rotate_object`/`translate_object`, inclusa la copia indipendente restituita con `inplace=False`) e l'intera composizione di modelli (`add_model`, `remove_model`, `__add__`, `__radd__`, rinomina automatica sulle collisioni, preservazione della postura degli operandi, controlli di tipo).
 - `tests/test_user.py` copre `User` in modo esaustivo: caricamento e validazione dei dati ANSUR (eseguibili anche senza OpenSim installato), risoluzione di percentile/altezza (inclusa l'estrapolazione PCHIP fuori range con `UserWarning`), scaling antropometrico, ogni singolo setter di postura e la relativa property di lettura, ogni centro articolare (confrontato con la posizione OpenSim nativa) e il dizionario `joint_centers`, le misure derivate geometricamente (lunghezze di coscia/gamba/braccio/avambraccio, altezza del tronco, larghezza spalle) e quelle lette direttamente da ANSUR (circonferenze, profondità, larghezze, inclusa la stima a sezione circolare di coscia/polpaccio), `com`/`cop`/`set_position`, e l'integrazione con la facade ereditata da `OpenSimModel`.
 - `tests/test_screen.py` copre `Screen` in modo esaustivo: dimensionamento (esplicito, da diagonale, priorità e fallback tra i due), posa (`center_*`/`angle_deg`), struttura del modello (un corpo, un `WeldJoint`), rigenerazione della mesh sui setter e registrazione della cartella di geometria.
+- `tests/test_box.py` copre `Box` in modo esaustivo: massa/inerzia (default, esplicita, analitica per un parallelepipedo pieno) e relativa validazione (dimensioni/massa non positive), `origin`/`angle_deg`/`com` alla costruzione, `set_origin`/`set_angle_deg` (ciascuno preserva l'altra metà della posa), il fatto che `origin`/`angle_deg`/`corners` restino sempre coerenti con la posa corrente (anche dopo `rotate()`/`translate()` ereditati, e attraverso un setter di dimensione, che preserva la posa durante la ricostruzione), gli 8 spigoli (valori attesi e comportamento rigido sotto traslazione), struttura del modello (un corpo, un `WeldJoint`), indipendenza delle istanze, `copy()`, e rigenerazione della mesh sui setter.
 - `tests/test_cad_import.py` copre `OpenSimModel.from_step`: massa/inerzia calcolate correttamente da un solido di riferimento (con conversione di unità), generazione della mesh, giunti verso ground di default, combinazione di più solidi in un unico corpo (`as_one_object`, di default e disattivata) e relativi errori (file mancante, STEP senza solidi).
 - `tests/test_operators.py` copre `opensim_models.operators`: `add_component`/`remove_component` generici e i relativi errori, i wrapper nominati per corpi/giunti/forze-muscoli/marker/vincoli, i costruttori di giunto nominati (gradi di libertà, posizione/orientamento), i corpi a forma primitiva (massa/inerzia analitiche, geometria nativa vs mesh generata, tipo di giunto, batching), il collegamento di mesh esistenti a un corpo, l'uso di `structural_change()` per un batch di modifiche correlate (corpo+giunto), la preservazione della postura delle coordinate non toccate dalla modifica strutturale, e `rotate_object`/`translate_object` (mutazione in place di marker e `PhysicalOffsetFrame`, sola lettura su `Body`/`Joint`, perno/oggetto esterni come componente o coordinata, funzionamento standalone senza modello, rotazione/traslazione rigida dell'intero modello attraverso i suoi giunti agganciati al ground, `inplace=False` -- copia indipendente del modello o dell'oggetto, originale invariato -- ed i relativi errori).
 - `tests/test_player.py` copre la logica pura (senza una finestra/visualizzatore reale) di `opensim_models._player`: `MotionData` (conversione gradi->radianti solo sulle coordinate rotazionali quando `inDegrees=yes`, nessuna conversione su quelle traslazionali, interpolazione lineare e clamp fuori range, colonne che non sono coordinate del modello, errori su tabelle troppo corte) e `MotionPlayer` (play/pause, stop, cycle, avanti/indietro veloce con i relativi limiti e la ripartenza dal verso opposto, wraparound in avanti/indietro con `loop`, seek, e i relativi errori di costruzione). Il collegamento a una finestra Tk reale e l'aggancio nativo Win32 (`show(motion=...)`) non sono automatizzati: richiedono un display e un'interazione reale, verificati manualmente.
