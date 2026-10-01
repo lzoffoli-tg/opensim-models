@@ -3,9 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import csv
+import warnings
 
 import numpy as np
 import pandas as pd
+from scipy.interpolate import PchipInterpolator
 
 DEFAULT_DATASET = Path(__file__).resolve().parent / "assets" / "ansur_ref.csv"
 
@@ -119,32 +121,79 @@ def load_ansur(path: str | Path = DEFAULT_DATASET) -> pd.DataFrame:
 
 def _height_percentile(statures_m: np.ndarray, height_cm: float) -> float:
     height_m = height_cm / 100.0
-    minimum, maximum = float(np.min(statures_m)), float(np.max(statures_m))
-    if not minimum <= height_m <= maximum:
-        raise ValueError(
-            f"height={height_cm:g} cm is outside ANSUR range "
-            f"[{minimum * 100:.1f}, {maximum * 100:.1f}] cm"
+    sorted_statures = np.sort(statures_m)
+    minimum, maximum = float(sorted_statures[0]), float(sorted_statures[-1])
+
+    if minimum <= height_m <= maximum:
+        # Empirical CDF: no subject selection, no extrapolation.
+        return float(
+            np.searchsorted(sorted_statures, height_m, side="right")
+            * 100
+            / len(sorted_statures)
         )
-    # Empirical CDF: no subject selection and no extrapolation.
-    return float(
-        np.searchsorted(np.sort(statures_m), height_m, side="right")
-        * 100
-        / len(statures_m)
+
+    warnings.warn(
+        f"height={height_cm:g} cm is outside ANSUR range "
+        f"[{minimum * 100:.1f}, {maximum * 100:.1f}] cm; "
+        "extrapolating the stature percentile with a PCHIP interpolator.",
+        stacklevel=2,
     )
+    unique_statures = np.unique(sorted_statures)
+    counts = np.searchsorted(sorted_statures, unique_statures, side="right")
+    empirical_percentiles = counts * 100.0 / len(sorted_statures)
+    interpolator = PchipInterpolator(unique_statures, empirical_percentiles, extrapolate=True)
+    return float(interpolator(height_m))
+
+
+_EXCLUDED_COLUMNS = {
+    "subject_id",
+    "Branch",
+    "Component",
+    "Gender",
+    "BMI_class",
+    "Height_class",
+}
+
+
+def _values_from_height(frame: pd.DataFrame, height_m: float) -> dict[str, float]:
+    """Resolve every numeric measurement directly from an actual stature.
+
+    Each measurement is regressed against the real, per-subject stature using
+    a monotone PCHIP curve fitted on stature-binned means, then evaluated at
+    ``height_m``. This models each measurement's true correlation with
+    stature, so the same curve interpolates within the ANSUR range and
+    extrapolates beyond it, instead of relying on a percentile lookup that is
+    undefined outside ``[0, 100]``.
+    """
+    stature = frame["stature_m"].to_numpy(dtype=float)
+    n_bins = int(np.clip(len(frame) // 100, 10, 40))
+    bins = pd.qcut(stature, n_bins, duplicates="drop")
+
+    values: dict[str, float] = {}
+    for column in frame.columns:
+        if column in _EXCLUDED_COLUMNS:
+            continue
+        numeric = pd.to_numeric(frame[column], errors="coerce")
+        valid = numeric.notna().to_numpy()
+        if not valid.any():
+            continue
+        means = (
+            pd.DataFrame({"stature": stature[valid], "metric": numeric.to_numpy(dtype=float)[valid]})
+            .groupby(bins[valid], observed=True)
+            .mean()
+            .sort_values("stature")
+        )
+        interpolator = PchipInterpolator(
+            means["stature"].to_numpy(), means["metric"].to_numpy(), extrapolate=True
+        )
+        values[column] = float(interpolator(height_m))
+    return values
 
 
 def _percentile_values(frame: pd.DataFrame, percentile: float) -> dict[str, float]:
     values: dict[str, float] = {}
-    excluded = {
-        "subject_id",
-        "Branch",
-        "Component",
-        "Gender",
-        "BMI_class",
-        "Height_class",
-    }
     for column in frame.columns:
-        if column in excluded:
+        if column in _EXCLUDED_COLUMNS:
             continue
         numeric = (
             pd.to_numeric(frame[column], errors="coerce").dropna().to_numpy(dtype=float)
@@ -163,10 +212,14 @@ def resolve_reference(
 ) -> AnthropometricReference:
     """Resolve one anthropometric reference using a common ANSUR percentile.
 
-    ``height`` is expressed in centimetres. When present, it determines the
-    empirical stature percentile and takes precedence over ``percentile``.
+    ``height`` is expressed in centimetres. When present, every numeric
+    measurement is resolved directly from that stature (via a per-measurement
+    PCHIP regression against ANSUR subjects), and its empirical percentile is
+    reported for information only; both take precedence over ``percentile``.
     When absent, ``percentile`` is applied to every numeric ANSUR measurement,
-    including stature. Quantiles are calculated directly with NumPy.
+    including stature, using plain NumPy quantiles. Heights outside the ANSUR
+    stature range are extrapolated with PCHIP interpolators and emit a
+    :class:`UserWarning`.
 
     Parameters
     ----------
@@ -204,15 +257,20 @@ def resolve_reference(
     if gender_frame.empty:
         raise ValueError(f"ANSUR has no records for gender {normalized_gender!r}")
 
-    target_percentile = percentile
     if height is not None:
         target_percentile = _height_percentile(
             gender_frame["stature_m"].to_numpy(dtype=float),
             float(height),
         )
         target_percentile = min(99.9, max(0.1, target_percentile))
+        # Measurements come straight from the actual stature, not from
+        # target_percentile: a percentile lookup is undefined outside
+        # [0, 100] and would not reflect this exact height anyway.
+        values = _values_from_height(gender_frame, float(height) / 100.0)
+    else:
+        target_percentile = percentile
+        values = _percentile_values(gender_frame, target_percentile)
 
-    values = _percentile_values(gender_frame, target_percentile)
     return AnthropometricReference(
         normalized_gender,
         target_percentile,

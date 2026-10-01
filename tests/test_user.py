@@ -111,9 +111,7 @@ def test_height_resolves_a_common_target_percentile():
     assert reference.percentile == pytest.approx(
         min(99.9, max(0.1, expected_percentile))
     )
-    assert reference.height_cm == pytest.approx(
-        np.percentile(male["stature_m"], reference.percentile, method="linear") * 100
-    )
+    assert reference.height_cm == pytest.approx(175.0)
 
 
 @pytest.mark.parametrize("gender", ["X", "male", ""])
@@ -122,9 +120,20 @@ def test_gender_is_validated(gender):
         resolve_reference(gender, dataset=DATASET)
 
 
-def test_height_outside_dataset_range_is_rejected():
-    with pytest.raises(ValueError, match="outside ANSUR range"):
-        resolve_reference("F", height=250.0, dataset=DATASET)
+def test_height_outside_dataset_range_warns_and_extrapolates():
+    male = load_ansur(DATASET).query("Gender == 'M'")
+    assert 205.0 > male["stature_m"].max() * 100
+
+    with pytest.warns(UserWarning, match="outside ANSUR range"):
+        reference = resolve_reference("M", height=205.0, dataset=DATASET)
+
+    baseline = resolve_reference("M", percentile=99.0, dataset=DATASET)
+
+    assert reference.height_cm == pytest.approx(205.0)
+    assert reference.percentile > 99.0
+    # Measurements correlated with stature should extrapolate above the
+    # tallest in-range percentile, not collapse to a percentile lookup.
+    assert reference.values["acromialheight"] > baseline.values["acromialheight"]
 
 
 # ---------------------------------------------------------------------------
