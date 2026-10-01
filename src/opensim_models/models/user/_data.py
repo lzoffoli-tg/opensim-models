@@ -119,6 +119,31 @@ def load_ansur(path: str | Path = DEFAULT_DATASET) -> pd.DataFrame:
     return frame
 
 
+def _pchip_with_linear_tails(x: np.ndarray, y: np.ndarray):
+    """Build a PCHIP interpolator that extrapolates linearly, not cubically.
+
+    Extending the fitted cubic polynomial beyond the data (SciPy's
+    ``extrapolate=True``) can swing arbitrarily far from the trend for
+    queries well outside the sampled range. Continuing instead along the
+    tangent at each boundary keeps extrapolated values monotonic with the
+    local trend.
+    """
+    interpolator = PchipInterpolator(x, y, extrapolate=False)
+    derivative = interpolator.derivative()
+    x_min, x_max = float(x[0]), float(x[-1])
+    y_min, y_max = float(y[0]), float(y[-1])
+    slope_min, slope_max = float(derivative(x_min)), float(derivative(x_max))
+
+    def evaluate(query: float) -> float:
+        if query < x_min:
+            return y_min + slope_min * (query - x_min)
+        if query > x_max:
+            return y_max + slope_max * (query - x_max)
+        return float(interpolator(query))
+
+    return evaluate
+
+
 def _height_percentile(statures_m: np.ndarray, height_cm: float) -> float:
     height_m = height_cm / 100.0
     sorted_statures = np.sort(statures_m)
@@ -136,13 +161,13 @@ def _height_percentile(statures_m: np.ndarray, height_cm: float) -> float:
         f"height={height_cm:g} cm is outside ANSUR range "
         f"[{minimum * 100:.1f}, {maximum * 100:.1f}] cm; "
         "extrapolating the stature percentile with a PCHIP interpolator.",
+        category=UserWarning,
         stacklevel=2,
     )
     unique_statures = np.unique(sorted_statures)
     counts = np.searchsorted(sorted_statures, unique_statures, side="right")
     empirical_percentiles = counts * 100.0 / len(sorted_statures)
-    interpolator = PchipInterpolator(unique_statures, empirical_percentiles, extrapolate=True)
-    return float(interpolator(height_m))
+    return _pchip_with_linear_tails(unique_statures, empirical_percentiles)(height_m)
 
 
 _EXCLUDED_COLUMNS = {
@@ -183,10 +208,10 @@ def _values_from_height(frame: pd.DataFrame, height_m: float) -> dict[str, float
             .mean()
             .sort_values("stature")
         )
-        interpolator = PchipInterpolator(
-            means["stature"].to_numpy(), means["metric"].to_numpy(), extrapolate=True
+        interpolator = _pchip_with_linear_tails(
+            means["stature"].to_numpy(), means["metric"].to_numpy()
         )
-        values[column] = float(interpolator(height_m))
+        values[column] = interpolator(height_m)
     return values
 
 

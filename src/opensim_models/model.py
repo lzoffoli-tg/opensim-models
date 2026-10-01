@@ -117,6 +117,7 @@ def import_opensim() -> Any:
             "Install a compatible OpenSim/Conda environment first."
         ) from error
     opensim.Logger.removeFileSink()  # OpenSim otherwise writes opensim.log to the CWD
+    opensim.Logger.setLevelString("Warn")  # Silence per-model "Loaded model ..." info logs
     return opensim
 
 
