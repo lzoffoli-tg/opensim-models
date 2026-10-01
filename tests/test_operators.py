@@ -359,3 +359,357 @@ def test_primitive_bodies_can_be_batched_together():
 
     assert model.bodies.getSize() == 2
     assert model.joints.getSize() == 2
+
+
+# ---------------------------------------------------------------------------
+# rotate_object
+# ---------------------------------------------------------------------------
+
+
+def test_rotate_object_rotates_a_marker_about_the_origin():
+    model = make_model()
+    marker = opensim.Marker("mk1", model.model.getGround(), opensim.Vec3(1.0, 0.0, 0.0))
+    operators.add_marker(model, marker, reinitialize=True)
+
+    new_position = operators.rotate_object(marker, (0.0, 0.0, 0.0), (0.0, 0.0, 1.0), 90.0)
+
+    assert new_position == pytest.approx((0.0, 1.0, 0.0), abs=1e-9)
+    assert model.marker_location("mk1") == pytest.approx((0.0, 1.0, 0.0), abs=1e-9)
+
+
+def test_rotate_object_rotates_a_physical_offset_frame_translation_and_orientation():
+    model = make_model()
+    with model.structural_change():
+        body = operators.add_body(model, "b1", mass=1.0, inertia=(1, 1, 1, 0, 0, 0))
+        operators.add_weld_joint(model, "b1_joint", body, position=(1.0, 0.0, 0.0))
+
+    joint = model.joints.get("b1_joint")
+    parent = opensim.PhysicalOffsetFrame.safeDownCast(joint.getParentFrame())
+
+    new_position = operators.rotate_object(parent, (0.0, 0.0, 0.0), (0.0, 0.0, 1.0), 90.0)
+
+    assert new_position == pytest.approx((0.0, 1.0, 0.0), abs=1e-9)
+    assert tuple(parent.get_translation().to_numpy()) == pytest.approx(
+        (0.0, 1.0, 0.0), abs=1e-9
+    )
+    assert parent.get_orientation()[2] == pytest.approx(math.radians(90.0))
+
+
+def test_rotate_object_pivots_about_an_external_point():
+    model = make_model()
+    with model.structural_change():
+        body = operators.add_body(model, "b1", mass=1.0, inertia=(1, 1, 1, 0, 0, 0))
+        operators.add_weld_joint(model, "b1_joint", body, position=(1.0, 0.0, 0.0))
+
+    joint = model.joints.get("b1_joint")
+    parent = opensim.PhysicalOffsetFrame.safeDownCast(joint.getParentFrame())
+
+    new_position = operators.rotate_object(parent, (2.0, 0.0, 0.0), (0.0, 0.0, 1.0), 180.0)
+
+    assert new_position == pytest.approx((3.0, 0.0, 0.0), abs=1e-9)
+
+
+def test_rotate_object_origin_can_be_another_component():
+    model = make_model()
+    pivot_marker = opensim.Marker(
+        "pivot", model.model.getGround(), opensim.Vec3(2.0, 0.0, 0.0)
+    )
+    operators.add_marker(model, pivot_marker, reinitialize=True)
+    moving_marker = opensim.Marker(
+        "moving", model.model.getGround(), opensim.Vec3(3.0, 0.0, 0.0)
+    )
+    operators.add_marker(model, moving_marker, reinitialize=True)
+
+    new_position = operators.rotate_object(
+        moving_marker, pivot_marker, (0.0, 0.0, 1.0), 180.0
+    )
+
+    assert new_position == pytest.approx((1.0, 0.0, 0.0), abs=1e-9)
+
+
+def test_rotate_object_on_a_body_is_read_only():
+    model = make_model()
+    body = add_free_body(model, "b1")
+    original_position = tuple(body.getPositionInGround(model.state).to_numpy())
+
+    new_position = operators.rotate_object(body, (1.0, 0.0, 0.0), (0.0, 0.0, 1.0), 90.0)
+
+    assert new_position != pytest.approx(original_position)
+    assert tuple(body.getPositionInGround(model.state).to_numpy()) == pytest.approx(
+        original_position
+    )
+
+
+def test_rotate_object_rejects_unresolvable_object():
+    with pytest.raises(TypeError, match="Cannot resolve a ground-frame position"):
+        operators.rotate_object(
+            "not an opensim component", (0.0, 0.0, 0.0), (0.0, 0.0, 1.0), 90.0
+        )
+
+
+def test_rotate_object_rejects_zero_direction():
+    with pytest.raises(ValueError, match="direction must be a non-zero vector"):
+        operators.rotate_object((1.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), 90.0)
+
+
+def test_rotate_object_works_standalone_on_plain_coordinates():
+    new_position = operators.rotate_object((1.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 1.0), 90.0)
+
+    assert new_position == pytest.approx((0.0, 1.0, 0.0), abs=1e-9)
+
+
+def test_rotate_object_rotates_the_whole_model_about_its_root_joint():
+    model = make_model()
+    with model.structural_change():
+        body = operators.add_body(model, "b1", mass=1.0, inertia=(1, 1, 1, 0, 0, 0))
+        operators.add_weld_joint(model, "b1_joint", body, position=(1.0, 0.0, 0.0))
+
+    new_position = operators.rotate_object(model, (0.0, 0.0, 0.0), (0.0, 0.0, 1.0), 90.0)
+
+    assert new_position == pytest.approx((0.0, 1.0, 0.0), abs=1e-9)
+    assert tuple(body.getPositionInGround(model.state).to_numpy()) == pytest.approx(
+        (0.0, 1.0, 0.0), abs=1e-9
+    )
+
+
+def test_rotate_object_rejects_a_model_with_no_ground_joint():
+    model = make_model()
+
+    with pytest.raises(ValueError, match="no joint attached to ground"):
+        operators.rotate_object(model, (0.0, 0.0, 0.0), (0.0, 0.0, 1.0), 90.0)
+
+
+# ---------------------------------------------------------------------------
+# rotate_object(..., inplace=False)
+# ---------------------------------------------------------------------------
+
+
+def test_rotate_object_not_inplace_leaves_the_whole_model_untouched():
+    model = make_model()
+    with model.structural_change():
+        body = operators.add_body(model, "b1", mass=1.0, inertia=(1, 1, 1, 0, 0, 0))
+        operators.add_weld_joint(model, "b1_joint", body, position=(1.0, 0.0, 0.0))
+
+    rotated_copy = operators.rotate_object(
+        model, (0.0, 0.0, 0.0), (0.0, 0.0, 1.0), 90.0, inplace=False
+    )
+
+    assert rotated_copy is not model
+    assert tuple(body.getPositionInGround(model.state).to_numpy()) == pytest.approx(
+        (1.0, 0.0, 0.0), abs=1e-9
+    )
+    copy_body_position = rotated_copy.body("b1").getPositionInGround(rotated_copy.state)
+    assert tuple(copy_body_position.to_numpy()) == pytest.approx((0.0, 1.0, 0.0), abs=1e-9)
+
+
+def test_rotate_object_not_inplace_leaves_a_marker_untouched():
+    model = make_model()
+    marker = opensim.Marker("mk1", model.model.getGround(), opensim.Vec3(1.0, 0.0, 0.0))
+    operators.add_marker(model, marker, reinitialize=True)
+
+    rotated_copy = operators.rotate_object(
+        marker, (0.0, 0.0, 0.0), (0.0, 0.0, 1.0), 90.0, inplace=False
+    )
+
+    assert rotated_copy is not marker
+    assert tuple(marker.get_location().to_numpy()) == pytest.approx(
+        (1.0, 0.0, 0.0), abs=1e-9
+    )
+    assert tuple(rotated_copy.get_location().to_numpy()) == pytest.approx(
+        (0.0, 1.0, 0.0), abs=1e-9
+    )
+
+
+def test_rotate_object_not_inplace_leaves_a_physical_offset_frame_untouched():
+    model = make_model()
+    with model.structural_change():
+        body = operators.add_body(model, "b1", mass=1.0, inertia=(1, 1, 1, 0, 0, 0))
+        operators.add_weld_joint(model, "b1_joint", body, position=(1.0, 0.0, 0.0))
+
+    joint = model.joints.get("b1_joint")
+    parent = opensim.PhysicalOffsetFrame.safeDownCast(joint.getParentFrame())
+
+    rotated_copy = operators.rotate_object(
+        parent, (0.0, 0.0, 0.0), (0.0, 0.0, 1.0), 90.0, inplace=False
+    )
+
+    assert rotated_copy is not parent
+    assert tuple(parent.get_translation().to_numpy()) == pytest.approx(
+        (1.0, 0.0, 0.0), abs=1e-9
+    )
+    assert tuple(rotated_copy.get_translation().to_numpy()) == pytest.approx(
+        (0.0, 1.0, 0.0), abs=1e-9
+    )
+
+
+def test_rotate_object_not_inplace_on_a_body_still_returns_a_position():
+    model = make_model()
+    body = add_free_body(model, "b1")
+    original_position = tuple(body.getPositionInGround(model.state).to_numpy())
+
+    new_position = operators.rotate_object(
+        body, (1.0, 0.0, 0.0), (0.0, 0.0, 1.0), 90.0, inplace=False
+    )
+
+    assert new_position != pytest.approx(original_position)
+    assert tuple(body.getPositionInGround(model.state).to_numpy()) == pytest.approx(
+        original_position
+    )
+
+
+# ---------------------------------------------------------------------------
+# translate_object
+# ---------------------------------------------------------------------------
+
+
+def test_translate_object_translates_a_marker():
+    model = make_model()
+    marker = opensim.Marker("mk1", model.model.getGround(), opensim.Vec3(1.0, 0.0, 0.0))
+    operators.add_marker(model, marker, reinitialize=True)
+
+    new_position = operators.translate_object(marker, (0.0, 2.0, 3.0))
+
+    assert new_position == pytest.approx((1.0, 2.0, 3.0), abs=1e-9)
+    assert model.marker_location("mk1") == pytest.approx((1.0, 2.0, 3.0), abs=1e-9)
+
+
+def test_translate_object_translates_a_physical_offset_frame():
+    model = make_model()
+    with model.structural_change():
+        body = operators.add_body(model, "b1", mass=1.0, inertia=(1, 1, 1, 0, 0, 0))
+        operators.add_weld_joint(model, "b1_joint", body, position=(1.0, 0.0, 0.0))
+
+    joint = model.joints.get("b1_joint")
+    parent = opensim.PhysicalOffsetFrame.safeDownCast(joint.getParentFrame())
+
+    new_position = operators.translate_object(parent, (0.0, 2.0, 0.0))
+
+    assert new_position == pytest.approx((1.0, 2.0, 0.0), abs=1e-9)
+    assert tuple(parent.get_translation().to_numpy()) == pytest.approx(
+        (1.0, 2.0, 0.0), abs=1e-9
+    )
+    # a translation does not rotate anything
+    orientation = parent.get_orientation()
+    assert (orientation[0], orientation[1], orientation[2]) == pytest.approx(
+        (0.0, 0.0, 0.0)
+    )
+
+
+def test_translate_object_on_a_body_is_read_only():
+    model = make_model()
+    body = add_free_body(model, "b1")
+    original_position = tuple(body.getPositionInGround(model.state).to_numpy())
+
+    new_position = operators.translate_object(body, (1.0, 0.0, 0.0))
+
+    assert new_position != pytest.approx(original_position)
+    assert tuple(body.getPositionInGround(model.state).to_numpy()) == pytest.approx(
+        original_position
+    )
+
+
+def test_translate_object_rejects_unresolvable_object():
+    with pytest.raises(TypeError, match="Cannot resolve a ground-frame position"):
+        operators.translate_object("not an opensim component", (0.0, 0.0, 0.0))
+
+
+def test_translate_object_rejects_malformed_direction():
+    with pytest.raises(ValueError, match="direction must have exactly 3 values"):
+        operators.translate_object((1.0, 0.0, 0.0), (0.0, 0.0))
+
+
+def test_translate_object_works_standalone_on_plain_coordinates():
+    new_position = operators.translate_object((1.0, 0.0, 0.0), (0.0, 2.0, 3.0))
+
+    assert new_position == pytest.approx((1.0, 2.0, 3.0), abs=1e-9)
+
+
+def test_translate_object_translates_the_whole_model_about_its_root_joint():
+    model = make_model()
+    with model.structural_change():
+        body = operators.add_body(model, "b1", mass=1.0, inertia=(1, 1, 1, 0, 0, 0))
+        operators.add_weld_joint(model, "b1_joint", body, position=(1.0, 0.0, 0.0))
+
+    new_position = operators.translate_object(model, (0.0, 2.0, 0.0))
+
+    assert new_position == pytest.approx((1.0, 2.0, 0.0), abs=1e-9)
+    assert tuple(body.getPositionInGround(model.state).to_numpy()) == pytest.approx(
+        (1.0, 2.0, 0.0), abs=1e-9
+    )
+
+
+def test_translate_object_rejects_a_model_with_no_ground_joint():
+    model = make_model()
+
+    with pytest.raises(ValueError, match="no joint attached to ground"):
+        operators.translate_object(model, (0.0, 2.0, 0.0))
+
+
+# ---------------------------------------------------------------------------
+# translate_object(..., inplace=False)
+# ---------------------------------------------------------------------------
+
+
+def test_translate_object_not_inplace_leaves_the_whole_model_untouched():
+    model = make_model()
+    with model.structural_change():
+        body = operators.add_body(model, "b1", mass=1.0, inertia=(1, 1, 1, 0, 0, 0))
+        operators.add_weld_joint(model, "b1_joint", body, position=(1.0, 0.0, 0.0))
+
+    translated_copy = operators.translate_object(model, (0.0, 2.0, 0.0), inplace=False)
+
+    assert translated_copy is not model
+    assert tuple(body.getPositionInGround(model.state).to_numpy()) == pytest.approx(
+        (1.0, 0.0, 0.0), abs=1e-9
+    )
+    copy_body_position = translated_copy.body("b1").getPositionInGround(translated_copy.state)
+    assert tuple(copy_body_position.to_numpy()) == pytest.approx((1.0, 2.0, 0.0), abs=1e-9)
+
+
+def test_translate_object_not_inplace_leaves_a_marker_untouched():
+    model = make_model()
+    marker = opensim.Marker("mk1", model.model.getGround(), opensim.Vec3(1.0, 0.0, 0.0))
+    operators.add_marker(model, marker, reinitialize=True)
+
+    translated_copy = operators.translate_object(marker, (0.0, 2.0, 3.0), inplace=False)
+
+    assert translated_copy is not marker
+    assert tuple(marker.get_location().to_numpy()) == pytest.approx(
+        (1.0, 0.0, 0.0), abs=1e-9
+    )
+    assert tuple(translated_copy.get_location().to_numpy()) == pytest.approx(
+        (1.0, 2.0, 3.0), abs=1e-9
+    )
+
+
+def test_translate_object_not_inplace_leaves_a_physical_offset_frame_untouched():
+    model = make_model()
+    with model.structural_change():
+        body = operators.add_body(model, "b1", mass=1.0, inertia=(1, 1, 1, 0, 0, 0))
+        operators.add_weld_joint(model, "b1_joint", body, position=(1.0, 0.0, 0.0))
+
+    joint = model.joints.get("b1_joint")
+    parent = opensim.PhysicalOffsetFrame.safeDownCast(joint.getParentFrame())
+
+    translated_copy = operators.translate_object(parent, (0.0, 2.0, 0.0), inplace=False)
+
+    assert translated_copy is not parent
+    assert tuple(parent.get_translation().to_numpy()) == pytest.approx(
+        (1.0, 0.0, 0.0), abs=1e-9
+    )
+    assert tuple(translated_copy.get_translation().to_numpy()) == pytest.approx(
+        (1.0, 2.0, 0.0), abs=1e-9
+    )
+
+
+def test_translate_object_not_inplace_on_a_body_still_returns_a_position():
+    model = make_model()
+    body = add_free_body(model, "b1")
+    original_position = tuple(body.getPositionInGround(model.state).to_numpy())
+
+    new_position = operators.translate_object(body, (1.0, 0.0, 0.0), inplace=False)
+
+    assert new_position != pytest.approx(original_position)
+    assert tuple(body.getPositionInGround(model.state).to_numpy()) == pytest.approx(
+        original_position
+    )

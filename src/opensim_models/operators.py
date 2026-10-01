@@ -1,34 +1,47 @@
-"""Generic add/remove operators for OpenSim model components.
+"""Generic add/remove/move operators for OpenSim model components.
 
 Thin wrappers around OpenSim's own component ``Set`` API (``BodySet``,
 ``JointSet``, ``ForceSet``, ``MarkerSet``, ``ConstraintSet``,
 ``ControllerSet``, ``ContactGeometrySet``, ``ProbeSet``), covering every
-component category an :class:`~opensim_models.model.OpenSimModel` exposes.
+component category an :class:`~opensim_models.model.OpenSimModel` exposes,
+plus two repositioning operators -- :func:`rotate_object` and
+:func:`translate_object` -- that work on a component or on a whole model.
 
-None of these functions rebuild the model's system by default: adding or
-removing a component is a structural change that leaves ``model.state``
-temporarily invalid (not just its defaults, but the state object itself --
-reading it crashes the process rather than raising a catchable error).
-Pass ``reinitialize=True`` for a single, self-contained call; for a batch
-(e.g. a body and the joint connecting it, or several removals), wrap the
-whole batch in :meth:`~opensim_models.model.OpenSimModel.structural_change`
-instead and leave every call's ``reinitialize`` at its default ``False``:
+None of the add/remove functions rebuild the model's system by default:
+adding or removing a component is a structural change that leaves
+``model.state`` temporarily invalid (not just its defaults, but the state
+object itself -- reading it crashes the process rather than raising a
+catchable error). Pass ``reinitialize=True`` for a single, self-contained
+call; for a batch (e.g. a body and the joint connecting it, or several
+removals), wrap the whole batch in
+:meth:`~opensim_models.model.OpenSimModel.structural_change` instead and
+leave every call's ``reinitialize`` at its default ``False``:
 
 >>> with model.structural_change():
 ...     body = operators.add_body(model, "b1", mass=2.0)
 ...     operators.add_joint(model, model.opensim.FreeJoint("b1_to_ground", model.model.getGround(), body))
+
+:func:`rotate_object`/:func:`translate_object` are a different kind of
+operator: they don't add or remove anything, only reposition what's
+already there (a ``Marker``, a joint's ``PhysicalOffsetFrame``, or an
+entire :class:`~opensim_models.model.OpenSimModel`), and call
+:meth:`~opensim_models.model.OpenSimModel.reinitialize` themselves, so they
+need no ``reinitialize=``/``structural_change()`` handling from the caller.
+:meth:`OpenSimModel.rotate <opensim_models.model.OpenSimModel.rotate>` and
+:meth:`OpenSimModel.translate <opensim_models.model.OpenSimModel.translate>`
+are convenience methods for rotating/translating a whole model without
+importing this module directly.
 """
 
 from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import numpy as np
 
-if TYPE_CHECKING:
-    from .model import OpenSimModel
+from .model import OpenSimModel, _find_owner
 
 __all__ = [
     "add_component",
@@ -59,6 +72,8 @@ __all__ = [
     "remove_contact_geometry",
     "add_probe",
     "remove_probe",
+    "rotate_object",
+    "translate_object",
 ]
 
 # Component category -> the OpenSim Model accessor for its (mutable) Set.
@@ -1173,3 +1188,600 @@ def remove_probe(
         See :func:`add_component`.
     """
     remove_component(model, "probe", name, reinitialize=reinitialize)
+
+
+# ---------------------------------------------------------------------------
+# Rotating an existing object about an arbitrary pivot
+# ---------------------------------------------------------------------------
+
+
+def _rodrigues_matrix(axis: tuple[float, float, float], angle_rad: float) -> Any:
+    """Return the 3x3 rotation matrix for ``angle_rad`` about ``axis``.
+
+    Plain-numpy Rodrigues formula, independent of OpenSim's own
+    ``Rotation`` composition API: that API only exposes rotation
+    composition/inversion through ``InverseRotation``, a read-only SWIG
+    view without a usable ``multiply`` -- fine for the one-shot Euler
+    conversion in :func:`_matrix_to_body_fixed_xyz`, but not for chaining
+    the several compositions :func:`rotate_object` needs.
+    """
+    axis = np.asarray(axis, dtype=float)
+    norm = np.linalg.norm(axis)
+    if norm == 0.0:
+        raise ValueError("direction must be a non-zero vector")
+    x, y, z = axis / norm
+    skew = np.array([[0.0, -z, y], [z, 0.0, -x], [-y, x, 0.0]])
+    return (
+        np.eye(3)
+        + np.sin(angle_rad) * skew
+        + (1.0 - np.cos(angle_rad)) * (skew @ skew)
+    )
+
+
+def _matrix_to_body_fixed_xyz(model: "OpenSimModel", matrix: Any) -> tuple[float, float, float]:
+    """Convert a 3x3 rotation matrix to body-fixed X-Y-Z Euler angles (radians).
+
+    Matches the convention every ``orientation_deg`` parameter in this
+    module already uses (e.g. :func:`add_weld_joint`), via OpenSim's own
+    ``Rotation`` conversion rather than a hand-rolled Euler-angle formula.
+    """
+    rotation = model.opensim.Rotation()
+    rotation.setRotationFromApproximateMat33(model.opensim.Mat33(*matrix.flatten()))
+    euler = rotation.convertRotationToBodyFixedXYZ()
+    return (euler.get(0), euler.get(1), euler.get(2))
+
+
+def _rotation_matrix_in_ground(model: "OpenSimModel", frame: Any) -> Any:
+    rotation = frame.getRotationInGround(model.state)
+    matrix = rotation.asMat33()
+    return np.array([[matrix.get(i, j) for j in range(3)] for i in range(3)])
+
+
+def _owner_of_component(thing: Any) -> "OpenSimModel | None":
+    """Return the :class:`OpenSimModel` that owns ``thing``, if resolvable.
+
+    ``thing`` is expected to be an OpenSim component (``getModel()`` is how
+    every ``ModelComponent`` -- ``Body``, ``Marker``, ``Joint``, ``Frame``,
+    ...  -- reaches back to its owning ``opensim.Model``); anything else
+    (a plain coordinate, an unattached component, ``None``, ...) resolves
+    to ``None`` rather than raising, so callers can keep trying other
+    candidates.
+    """
+    getter = getattr(thing, "getModel", None)
+    if getter is None:
+        return None
+    try:
+        raw_model = getter()
+    except Exception:
+        return None
+    return _find_owner(raw_model)
+
+
+def _resolve_model_for(obj: Any) -> "OpenSimModel | None":
+    """Find the :class:`OpenSimModel` that ``obj`` itself belongs to.
+
+    ``obj`` may be an :class:`OpenSimModel` (returned directly), an OpenSim
+    component owned by one (see :func:`_owner_of_component`), or anything
+    else (a plain coordinate, ``None``, ...), which resolves to ``None``.
+    """
+    if isinstance(obj, OpenSimModel):
+        return obj
+    return _owner_of_component(obj)
+
+
+def _resolve_model(obj: Any, origin: Any) -> "OpenSimModel | None":
+    """Find the :class:`OpenSimModel` that ``obj`` and/or ``origin`` belong to.
+
+    ``obj`` takes priority (it is the thing actually being rotated); a
+    plain ``(x, y, z)`` coordinate for either does not, by itself, require
+    a model at all -- see :func:`rotate_object`.
+    """
+    model = _resolve_model_for(obj)
+    if model is not None:
+        return model
+    if isinstance(origin, (tuple, list, np.ndarray)):
+        return None
+    return _resolve_model_for(origin)
+
+
+def _resolve_ground_position(
+    thing: Any, model: "OpenSimModel | None"
+) -> tuple[float, float, float]:
+    """Resolve ``thing`` to a ground-frame ``(x, y, z)`` position, in metres.
+
+    ``thing`` may be a plain ``(x, y, z)`` coordinate (no ``model`` needed
+    at all), an ``opensim.Marker``, an ``opensim.Joint`` (its child frame's
+    position, matching the convention every joint-centre property on
+    :class:`~opensim_models.models.User` already uses), or any
+    ``opensim.Frame`` (a ``Body``, a ``PhysicalOffsetFrame``, ``Ground``,
+    ...), in which case ``model`` must be the :class:`OpenSimModel` it
+    belongs to.
+
+    Raises
+    ------
+    TypeError
+        If ``thing`` is none of the above, or is a component but ``model``
+        is ``None``.
+    """
+    if isinstance(thing, (tuple, list, np.ndarray)):
+        values = tuple(float(value) for value in thing)
+        if len(values) != 3:
+            raise ValueError("a coordinate must have exactly 3 values (x, y, z)")
+        return values
+
+    def unresolvable():
+        raise TypeError(
+            f"Cannot resolve a ground-frame position for {thing!r}: expected a "
+            "(x, y, z) coordinate, or an opensim.Marker/Joint/Frame that "
+            "belongs to a live OpenSimModel/User"
+        )
+
+    if model is None:
+        unresolvable()
+
+    opensim = model.opensim
+
+    # safeDownCast raises a cryptic SWIG TypeError (rather than returning
+    # None) when given something that isn't even an OpenSim object at all
+    # (e.g. a plain string) -- guard with isinstance first for a clean error.
+    if not isinstance(thing, opensim.OpenSimObject):
+        unresolvable()
+
+    model.model.realizePosition(model.state)
+
+    if isinstance(thing, opensim.Marker):
+        location = thing.getLocationInGround(model.state)
+        return (location.get(0), location.get(1), location.get(2))
+
+    joint = opensim.Joint.safeDownCast(thing)
+    if joint is not None:
+        thing = joint.getChildFrame()
+
+    frame = opensim.Frame.safeDownCast(thing)
+    if frame is None:
+        unresolvable()
+    position = frame.getPositionInGround(model.state)
+    return (position.get(0), position.get(1), position.get(2))
+
+
+def _corresponding_component(target_model: "OpenSimModel", obj: Any) -> Any:
+    """Return the object in ``target_model`` at ``obj``'s absolute path.
+
+    Used for ``inplace=False``: ``obj`` belongs to the model that was just
+    cloned into ``target_model`` (:meth:`OpenSimModel.copy` keeps every
+    component's name and path unchanged), so the path alone identifies the
+    corresponding object in the copy. ``type(obj).safeDownCast(...)``
+    returns it typed as whatever ``obj`` already was (``Marker``,
+    ``PhysicalOffsetFrame``, ...), not the generic ``Component`` that
+    ``getComponent`` itself returns.
+
+    Stashes ``target_model`` on the returned component (SWIG proxies allow
+    arbitrary attributes, same as the ``component.thisown = False`` idiom
+    used elsewhere in this module): the component's underlying C++ memory
+    is owned by ``target_model.model``, so once this function's caller
+    (:func:`rotate_object`/:func:`translate_object`) returns just the
+    component, nothing else would otherwise keep ``target_model`` (a local
+    variable there) alive -- Python garbage-collecting it would leave the
+    returned component a dangling pointer.
+    """
+    raw = target_model.model.getComponent(obj.getAbsolutePathString())
+    found = type(obj).safeDownCast(raw)
+    found._opensim_models_owner = target_model
+    return found
+
+
+def _rotate_marker(
+    model: "OpenSimModel", obj: Any, pivot: Any, rotation_matrix: Any
+) -> tuple[float, float, float]:
+    """Rotate a ``Marker``'s location in place.
+
+    Does not call :meth:`~opensim_models.model.OpenSimModel.reinitialize`:
+    callers decide when (see :func:`rotate_object`).
+    """
+    opensim = model.opensim
+    current_position = np.array(_resolve_ground_position(obj, model), dtype=float)
+    new_position = pivot + rotation_matrix @ (current_position - pivot)
+
+    parent = opensim.Frame.safeDownCast(obj.getParentFrame())
+    parent_position = np.array(_resolve_ground_position(parent, model), dtype=float)
+    parent_rotation = _rotation_matrix_in_ground(model, parent)
+    local_position = parent_rotation.T @ (new_position - parent_position)
+
+    obj.set_location(opensim.Vec3(*local_position))
+    return tuple(float(value) for value in new_position)
+
+
+def _rotate_offset_frame(
+    model: "OpenSimModel", obj: Any, pivot: Any, rotation_matrix: Any
+) -> tuple[float, float, float]:
+    """Rotate a ``PhysicalOffsetFrame``'s translation and orientation in place.
+
+    Does not call :meth:`~opensim_models.model.OpenSimModel.reinitialize`:
+    callers rotating several frames together (see :func:`_rotate_whole_model`)
+    do that once, after the whole batch.
+    """
+    opensim = model.opensim
+    current_position = np.array(_resolve_ground_position(obj, model), dtype=float)
+    current_rotation = _rotation_matrix_in_ground(model, obj)
+    new_position = pivot + rotation_matrix @ (current_position - pivot)
+    new_rotation = rotation_matrix @ current_rotation
+
+    parent = opensim.PhysicalFrame.safeDownCast(obj.getParentFrame())
+    parent_position = np.array(_resolve_ground_position(parent, model), dtype=float)
+    parent_rotation = _rotation_matrix_in_ground(model, parent)
+
+    local_position = parent_rotation.T @ (new_position - parent_position)
+    local_rotation = parent_rotation.T @ new_rotation
+
+    obj.set_translation(opensim.Vec3(*local_position))
+    obj.set_orientation(opensim.Vec3(*_matrix_to_body_fixed_xyz(model, local_rotation)))
+    return tuple(float(value) for value in new_position)
+
+
+def _ground_attached_offset_frames(model: "OpenSimModel", verb: str) -> list[Any]:
+    """Return the ``PhysicalOffsetFrame``\\ s of every joint of ``model`` attached to ground.
+
+    Every body hangs, directly or transitively, off some joint; moving
+    each joint that is itself attached to ground (there is usually exactly
+    one, e.g. a ``User``'s ``ground_pelvis``) by the same amount moves the
+    whole model as one rigid assembly, without touching any of its
+    internal/relative joint coordinates. ``verb`` (``"rotate"`` or
+    ``"move"``) only customizes the error messages below.
+    """
+    opensim = model.opensim
+    root_frames = []
+    for index in range(model.joints.getSize()):
+        joint = model.joints.get(index)
+        parent = joint.getParentFrame()
+        if opensim.Ground.safeDownCast(parent) is not None:
+            raise TypeError(
+                f"Joint {joint.getName()!r} is attached directly to ground with "
+                f"no offset frame to {verb}; rebuild it with an explicit "
+                "position/orientation (e.g. via add_weld_joint) so it has one."
+            )
+        offset = opensim.PhysicalOffsetFrame.safeDownCast(parent)
+        if offset is not None and opensim.Ground.safeDownCast(offset.getParentFrame()) is not None:
+            root_frames.append(offset)
+
+    if not root_frames:
+        raise ValueError(f"model has no joint attached to ground to {verb}")
+    return root_frames
+
+
+def _rotate_whole_model(
+    model: "OpenSimModel", pivot: Any, rotation_matrix: Any
+) -> tuple[float, float, float] | tuple[tuple[float, float, float], ...]:
+    """Rotate every one of ``model``'s own ground-attached joints rigidly."""
+    root_frames = _ground_attached_offset_frames(model, "rotate")
+    new_positions = tuple(
+        _rotate_offset_frame(model, frame, pivot, rotation_matrix) for frame in root_frames
+    )
+    model.reinitialize()
+    return new_positions[0] if len(new_positions) == 1 else new_positions
+
+
+def rotate_object(
+    obj: Any,
+    origin: Any,
+    direction: tuple[float, float, float],
+    angle_deg: float,
+    inplace: bool = True,
+) -> Any:
+    """Rotate ``obj`` by ``angle_deg`` about the axis through ``origin`` pointing along ``direction``.
+
+    ``origin`` -- the pivot -- is resolved to a ground-frame point via
+    :func:`_resolve_ground_position`: it can be a plain ``(x, y, z)``
+    coordinate, or any component with a ground-frame position (an
+    ``opensim.Marker``, an ``opensim.Joint``, or any ``opensim.Frame``,
+    e.g. a ``Body`` or a joint's own ``PhysicalOffsetFrame``). The pivot
+    does not have to coincide with ``obj``'s own origin: this rotates
+    ``obj`` rigidly in place around that external point, same as rotating
+    a point on a rigid body around an arbitrary axis elsewhere in space.
+
+    ``obj`` can be:
+
+    - An entire :class:`~opensim_models.model.OpenSimModel` (or a
+      :class:`~opensim_models.models.User`/``Screen``): every joint of
+      ``obj`` that is itself attached to ground is rotated by the same
+      amount, which rigidly rotates the whole model (preserving every
+      internal/relative joint angle) -- see :func:`_rotate_whole_model`.
+    - An ``opensim.Marker``: its ``location`` (relative to its own parent
+      frame) is updated so the marker ends up at the rotated position.
+      A marker carries no orientation, so only its position changes.
+    - An ``opensim.PhysicalOffsetFrame`` (e.g. a joint's parent/child
+      offset frame, as built by every ``add_*_joint`` function in this
+      module): both its ``translation`` and ``orientation`` properties are
+      updated. This is how a joint's static placement -- set once via
+      ``position=``/``orientation_deg=`` at construction time -- can be
+      re-tilted afterward.
+    - Anything else accepted by :func:`_resolve_ground_position` (a
+      ``Body``, a ``Joint``, a generic ``Frame``, or a plain coordinate):
+      there is no generic, unambiguous way to *move* these (a ``Body``'s
+      placement is entirely derived from the joint connecting it, and a
+      ``Joint`` is not itself a placeable thing), so only the rotated
+      position is computed and returned, read-only, regardless of
+      ``inplace`` -- useful to compute a ``position=``/``origin=``
+      argument for another call (e.g. building a new joint with
+      :func:`add_weld_joint`) without mutating anything. A plain
+      coordinate needs no owning model at all: ``rotate_object((1, 0, 0),
+      (0, 0, 0), (0, 0, 1), 90)`` works standalone.
+
+    ``inplace`` controls what happens to the three cases above that are
+    actually mutable (a whole model, a ``Marker``, or a
+    ``PhysicalOffsetFrame``):
+
+    - ``True`` (default): ``obj`` itself is mutated, and the return value
+      is its new ground-frame position (or a tuple of them, for a whole
+      model with more than one ground-attached joint) -- same as before
+      this parameter existed.
+    - ``False``: ``obj`` is left untouched; instead, the *model it belongs
+      to* is cloned (:meth:`~opensim_models.model.OpenSimModel.copy`) and
+      the rotation is applied to the corresponding object in that clone,
+      located by matching ``obj``'s absolute path (stable across
+      ``copy()``, see :func:`_corresponding_component`). The return value
+      is then that rotated **object** -- the whole cloned model, if
+      ``obj`` was a whole model; otherwise the corresponding ``Marker``/
+      ``PhysicalOffsetFrame`` inside the (otherwise inaccessible unless
+      you call ``.getModel()`` on it) cloned model.
+
+    A mutated component needs its model's system rebuilt before the change
+    is visible to subsequent position reads (the same reason
+    :meth:`~opensim_models.model.OpenSimModel.set_body_mass` calls
+    :meth:`~opensim_models.model.OpenSimModel.reinitialize` after changing
+    a property): this calls it automatically, preserving the current
+    posture/velocity.
+
+    Parameters
+    ----------
+    obj : OpenSimModel, opensim.Marker, opensim.PhysicalOffsetFrame, or
+        anything accepted by :func:`_resolve_ground_position`
+        The object (or whole model) to rotate.
+    origin : (x, y, z) coordinate, opensim.Marker, opensim.Joint, or opensim.Frame
+        Pivot point for the rotation, in ground frame. A component must
+        belong to the same model as ``obj`` (when ``obj`` is itself a
+        component rather than a whole model).
+    direction : tuple[float, float, float]
+        Direction of the rotation axis through ``origin``, in ground frame.
+        Does not need to be a unit vector.
+    angle_deg : float
+        Rotation angle, in degrees.
+    inplace : bool, optional
+        When ``True`` (default), mutate ``obj`` and return its new
+        position. When ``False``, leave ``obj`` untouched and return a
+        rotated copy of it instead (the whole model, for a whole-model
+        ``obj``) -- see above. Has no effect on the read-only cases (a
+        ``Body``, a ``Joint``, a generic ``Frame``, or a plain
+        coordinate), which are never mutated either way.
+
+    Returns
+    -------
+    tuple[float, float, float], OpenSimModel, opensim.Marker, or opensim.PhysicalOffsetFrame
+        ``obj``'s new ground-frame position (or a tuple of them, for a
+        whole model with more than one ground-attached joint) when
+        ``inplace=True`` or ``obj`` is one of the read-only cases;
+        otherwise (``inplace=False`` and ``obj`` is a whole model, a
+        ``Marker``, or a ``PhysicalOffsetFrame``) the rotated copy itself.
+
+    Raises
+    ------
+    TypeError
+        If ``obj`` or ``origin`` cannot be resolved to a ground-frame
+        position (see :func:`_resolve_ground_position`), or if ``obj`` is
+        a model with a joint attached directly to ground with no offset
+        frame to rotate.
+    ValueError
+        If ``direction`` is a zero vector, ``origin`` is a coordinate
+        without exactly 3 values, or ``obj`` is a model with no joint
+        attached to ground at all.
+    """
+    model = _resolve_model(obj, origin)
+    pivot = np.array(_resolve_ground_position(origin, model), dtype=float)
+    rotation_matrix = _rodrigues_matrix(direction, np.radians(angle_deg))
+
+    if isinstance(obj, OpenSimModel):
+        target_model = obj if inplace else obj.copy()
+        new_position = _rotate_whole_model(target_model, pivot, rotation_matrix)
+        return new_position if inplace else target_model
+
+    target_model = model
+    target_obj = obj
+    if not inplace and model is not None:
+        target_model = model.copy()
+        target_obj = _corresponding_component(target_model, obj)
+
+    if target_model is not None and isinstance(target_obj, target_model.opensim.Marker):
+        new_position = _rotate_marker(target_model, target_obj, pivot, rotation_matrix)
+        target_model.reinitialize()
+        return new_position if inplace else target_obj
+
+    if target_model is not None and isinstance(target_obj, target_model.opensim.PhysicalOffsetFrame):
+        new_position = _rotate_offset_frame(target_model, target_obj, pivot, rotation_matrix)
+        target_model.reinitialize()
+        return new_position if inplace else target_obj
+
+    current_position = np.array(_resolve_ground_position(obj, model), dtype=float)
+    new_position = pivot + rotation_matrix @ (current_position - pivot)
+    return tuple(float(value) for value in new_position)
+
+
+# ---------------------------------------------------------------------------
+# Translating an existing object
+# ---------------------------------------------------------------------------
+
+
+def _translate_marker(
+    model: "OpenSimModel", obj: Any, direction_vector: Any
+) -> tuple[float, float, float]:
+    """Translate a ``Marker``'s location in place.
+
+    Does not call :meth:`~opensim_models.model.OpenSimModel.reinitialize`:
+    callers decide when (see :func:`translate_object`).
+    """
+    opensim = model.opensim
+    parent = opensim.Frame.safeDownCast(obj.getParentFrame())
+    parent_position = np.array(_resolve_ground_position(parent, model), dtype=float)
+    parent_rotation = _rotation_matrix_in_ground(model, parent)
+
+    local_delta = parent_rotation.T @ direction_vector
+    current_local_location = np.array(obj.get_location().to_numpy(), dtype=float)
+    new_local_location = current_local_location + local_delta
+    obj.set_location(opensim.Vec3(*new_local_location))
+
+    new_position = parent_position + parent_rotation @ new_local_location
+    return tuple(float(value) for value in new_position)
+
+
+def _translate_offset_frame(
+    model: "OpenSimModel", obj: Any, direction_vector: Any
+) -> tuple[float, float, float]:
+    """Translate a ``PhysicalOffsetFrame``'s translation property in place.
+
+    ``direction_vector`` is a displacement, in ground frame: unlike a
+    position, it does not need converting by the parent's position, only
+    by its orientation (:meth:`PhysicalOffsetFrame.set_translation` is
+    relative to the parent frame's own axes).
+
+    Does not call :meth:`~opensim_models.model.OpenSimModel.reinitialize`:
+    callers moving several frames together (see
+    :func:`_translate_whole_model`) do that once, after the whole batch.
+    """
+    opensim = model.opensim
+    parent = opensim.PhysicalFrame.safeDownCast(obj.getParentFrame())
+    parent_position = np.array(_resolve_ground_position(parent, model), dtype=float)
+    parent_rotation = _rotation_matrix_in_ground(model, parent)
+
+    local_delta = parent_rotation.T @ direction_vector
+    current_local_translation = np.array(obj.get_translation().to_numpy(), dtype=float)
+    new_local_translation = current_local_translation + local_delta
+    obj.set_translation(opensim.Vec3(*new_local_translation))
+
+    new_position = parent_position + parent_rotation @ new_local_translation
+    return tuple(float(value) for value in new_position)
+
+
+def _translate_whole_model(
+    model: "OpenSimModel", direction_vector: Any
+) -> tuple[float, float, float] | tuple[tuple[float, float, float], ...]:
+    """Translate every one of ``model``'s own ground-attached joints rigidly."""
+    root_frames = _ground_attached_offset_frames(model, "move")
+    new_positions = tuple(
+        _translate_offset_frame(model, frame, direction_vector) for frame in root_frames
+    )
+    model.reinitialize()
+    return new_positions[0] if len(new_positions) == 1 else new_positions
+
+
+def translate_object(
+    obj: Any, direction: tuple[float, float, float], inplace: bool = True
+) -> Any:
+    """Translate ``obj`` by ``direction`` (``dx, dy, dz``), in ground frame.
+
+    A pure rigid displacement -- unlike :func:`rotate_object`, there is no
+    pivot to specify: every point of a rigid body shifts by the exact same
+    vector under a translation. ``obj`` can be:
+
+    - An entire :class:`~opensim_models.model.OpenSimModel` (or a
+      :class:`~opensim_models.models.User`/``Screen``): every joint of
+      ``obj`` that is itself attached to ground is shifted by the same
+      amount, which rigidly translates the whole model (preserving every
+      internal/relative joint angle) -- see :func:`_translate_whole_model`.
+    - An ``opensim.Marker``: its ``location`` (relative to its own parent
+      frame) is updated so the marker ends up at the shifted position.
+    - An ``opensim.PhysicalOffsetFrame`` (e.g. a joint's parent/child
+      offset frame, as built by every ``add_*_joint`` function in this
+      module): its ``translation`` property is updated; ``orientation`` is
+      untouched, since a translation does not rotate anything.
+    - Anything else accepted by :func:`_resolve_ground_position` (a
+      ``Body``, a ``Joint``, a generic ``Frame``, or a plain coordinate):
+      there is no generic, unambiguous way to *move* these, so only the
+      shifted position is computed and returned, read-only, regardless of
+      ``inplace``. A plain coordinate needs no owning model at all:
+      ``translate_object((1, 0, 0), (0, 1, 0))`` works standalone.
+
+    ``inplace`` controls what happens to the three cases above that are
+    actually mutable (a whole model, a ``Marker``, or a
+    ``PhysicalOffsetFrame``) -- see :func:`rotate_object` for the full
+    explanation, identical here:
+
+    - ``True`` (default): ``obj`` itself is mutated, and the return value
+      is its new ground-frame position (or a tuple of them, for a whole
+      model with more than one ground-attached joint).
+    - ``False``: ``obj`` is left untouched; the model it belongs to is
+      cloned instead (:meth:`~opensim_models.model.OpenSimModel.copy`),
+      the translation is applied to the corresponding object in that
+      clone (see :func:`_corresponding_component`), and that translated
+      **object** is returned -- the whole cloned model, if ``obj`` was a
+      whole model; otherwise the corresponding ``Marker``/
+      ``PhysicalOffsetFrame`` inside it.
+
+    A mutated component needs its model's system rebuilt before the change
+    is visible to subsequent position reads: this calls
+    :meth:`~opensim_models.model.OpenSimModel.reinitialize` automatically,
+    preserving the current posture/velocity (see :func:`rotate_object` for
+    why).
+
+    Parameters
+    ----------
+    obj : OpenSimModel, opensim.Marker, opensim.PhysicalOffsetFrame, or
+        anything accepted by :func:`_resolve_ground_position`
+        The object (or whole model) to translate.
+    direction : tuple[float, float, float]
+        Displacement ``(dx, dy, dz)``, in ground frame, in metres.
+    inplace : bool, optional
+        When ``True`` (default), mutate ``obj`` and return its new
+        position. When ``False``, leave ``obj`` untouched and return a
+        translated copy of it instead (the whole model, for a whole-model
+        ``obj``) -- see above. Has no effect on the read-only cases (a
+        ``Body``, a ``Joint``, a generic ``Frame``, or a plain
+        coordinate), which are never mutated either way.
+
+    Returns
+    -------
+    tuple[float, float, float], OpenSimModel, opensim.Marker, or opensim.PhysicalOffsetFrame
+        ``obj``'s new ground-frame position (or a tuple of them, for a
+        whole model with more than one ground-attached joint) when
+        ``inplace=True`` or ``obj`` is one of the read-only cases;
+        otherwise (``inplace=False`` and ``obj`` is a whole model, a
+        ``Marker``, or a ``PhysicalOffsetFrame``) the translated copy
+        itself.
+
+    Raises
+    ------
+    TypeError
+        If ``obj`` cannot be resolved to a ground-frame position (see
+        :func:`_resolve_ground_position`), or if ``obj`` is a model with a
+        joint attached directly to ground with no offset frame to move.
+    ValueError
+        If ``direction`` does not have exactly 3 values, or ``obj`` is a
+        model with no joint attached to ground at all.
+    """
+    direction_vector = np.asarray(direction, dtype=float)
+    if direction_vector.shape != (3,):
+        raise ValueError("direction must have exactly 3 values (dx, dy, dz)")
+
+    model = _resolve_model_for(obj)
+
+    if isinstance(obj, OpenSimModel):
+        target_model = obj if inplace else obj.copy()
+        new_position = _translate_whole_model(target_model, direction_vector)
+        return new_position if inplace else target_model
+
+    target_model = model
+    target_obj = obj
+    if not inplace and model is not None:
+        target_model = model.copy()
+        target_obj = _corresponding_component(target_model, obj)
+
+    if target_model is not None and isinstance(target_obj, target_model.opensim.Marker):
+        new_position = _translate_marker(target_model, target_obj, direction_vector)
+        target_model.reinitialize()
+        return new_position if inplace else target_obj
+
+    if target_model is not None and isinstance(target_obj, target_model.opensim.PhysicalOffsetFrame):
+        new_position = _translate_offset_frame(target_model, target_obj, direction_vector)
+        target_model.reinitialize()
+        return new_position if inplace else target_obj
+
+    current_position = np.array(_resolve_ground_position(obj, model), dtype=float)
+    new_position = current_position + direction_vector
+    return tuple(float(value) for value in new_position)

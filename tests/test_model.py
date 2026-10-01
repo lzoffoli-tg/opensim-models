@@ -7,7 +7,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from opensim_models import OpenSimModel
+from opensim_models import OpenSimModel, operators
 
 # DEFAULT_MODEL_PATH is User's internal default, reused here as a real .osim
 # fixture to test OpenSimModel's generic facade rather than User specifically.
@@ -641,3 +641,66 @@ def test_chained_add_merges_three_models():
     combined = first + second + third
 
     assert combined.bodies.getSize() == 22 * 3
+
+
+# ---------------------------------------------------------------------------
+# rotate / translate
+# ---------------------------------------------------------------------------
+
+
+def build_one_body_model(position=(1.0, 0.0, 0.0)):
+    model = OpenSimModel(model_path=None)
+    with model.structural_change():
+        body = operators.add_body(model, "b1", mass=1.0, inertia=(1, 1, 1, 0, 0, 0))
+        operators.add_weld_joint(model, "b1_joint", body, position=position)
+    return model, body
+
+
+def test_rotate_delegates_to_rotate_object():
+    model, body = build_one_body_model(position=(1.0, 0.0, 0.0))
+
+    new_position = model.rotate((0.0, 0.0, 0.0), (0.0, 0.0, 1.0), 90.0)
+
+    assert new_position == pytest.approx((0.0, 1.0, 0.0), abs=1e-9)
+    assert tuple(body.getPositionInGround(model.state).to_numpy()) == pytest.approx(
+        (0.0, 1.0, 0.0), abs=1e-9
+    )
+
+
+def test_translate_delegates_to_translate_object():
+    model, body = build_one_body_model(position=(1.0, 0.0, 0.0))
+
+    new_position = model.translate((0.0, 2.0, 0.0))
+
+    assert new_position == pytest.approx((1.0, 2.0, 0.0), abs=1e-9)
+    assert tuple(body.getPositionInGround(model.state).to_numpy()) == pytest.approx(
+        (1.0, 2.0, 0.0), abs=1e-9
+    )
+
+
+def test_rotate_not_inplace_returns_a_rotated_copy_and_leaves_self_untouched():
+    model, body = build_one_body_model(position=(1.0, 0.0, 0.0))
+
+    rotated_copy = model.rotate((0.0, 0.0, 0.0), (0.0, 0.0, 1.0), 90.0, inplace=False)
+
+    assert isinstance(rotated_copy, OpenSimModel)
+    assert rotated_copy is not model
+    assert tuple(body.getPositionInGround(model.state).to_numpy()) == pytest.approx(
+        (1.0, 0.0, 0.0), abs=1e-9
+    )
+    copy_body_position = rotated_copy.body("b1").getPositionInGround(rotated_copy.state)
+    assert tuple(copy_body_position.to_numpy()) == pytest.approx((0.0, 1.0, 0.0), abs=1e-9)
+
+
+def test_translate_not_inplace_returns_a_translated_copy_and_leaves_self_untouched():
+    model, body = build_one_body_model(position=(1.0, 0.0, 0.0))
+
+    translated_copy = model.translate((0.0, 2.0, 0.0), inplace=False)
+
+    assert isinstance(translated_copy, OpenSimModel)
+    assert translated_copy is not model
+    assert tuple(body.getPositionInGround(model.state).to_numpy()) == pytest.approx(
+        (1.0, 0.0, 0.0), abs=1e-9
+    )
+    copy_body_position = translated_copy.body("b1").getPositionInGround(translated_copy.state)
+    assert tuple(copy_body_position.to_numpy()) == pytest.approx((1.0, 2.0, 0.0), abs=1e-9)

@@ -4,12 +4,37 @@ import contextlib
 import os
 import shutil
 import sys
+import weakref
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
 __all__ = ["import_opensim", "OpenSimModel"]
+
+# Bridges a bare opensim.Model (e.g. obtained from a component's own
+# getModel()) back to the OpenSimModel wrapper that owns its `state` --
+# needed because SWIG hands out a fresh Python proxy on every getModel()
+# call, so identity can't be compared directly, only the underlying
+# pointer address (`.this`) can; see _find_owner. Weak-valued so a
+# garbage-collected OpenSimModel's entry disappears on its own.
+_owners: "weakref.WeakValueDictionary[int, OpenSimModel]" = weakref.WeakValueDictionary()
+
+
+def _register_owner(instance: "OpenSimModel") -> None:
+    _owners[int(instance.model.this)] = instance
+
+
+def _find_owner(raw_model: Any) -> "OpenSimModel | None":
+    """Return the live :class:`OpenSimModel` wrapping ``raw_model``, if any.
+
+    ``raw_model`` is a bare ``opensim.Model``, typically obtained from a
+    component via its own ``getModel()``. Returns ``None`` if ``raw_model``
+    is ``None`` or was never wrapped by a (still-alive) :class:`OpenSimModel`.
+    """
+    if raw_model is None:
+        return None
+    return _owners.get(int(raw_model.this))
 
 
 def _ensure_visualizer_dll_path() -> None:
@@ -170,6 +195,7 @@ class OpenSimModel:
         self._anchor_names: set[str] = set()
         self._merged: dict[int, list[tuple[str, str]]] = {}
         self._visualizer: Any | None = None
+        _register_owner(self)
 
     def copy(self) -> "OpenSimModel":
         """Return an independent, deep copy of this model.
@@ -197,6 +223,7 @@ class OpenSimModel:
         clone._anchor_names = set(self._anchor_names)
         clone._merged = dict(self._merged)
         clone._visualizer = None
+        _register_owner(clone)
         return clone
 
     @classmethod
@@ -902,6 +929,82 @@ class OpenSimModel:
         yield self
         self.model.finalizeConnections()
         self.state = self.model.initSystem()
+
+    def rotate(
+        self,
+        origin: Any,
+        direction: tuple[float, float, float],
+        angle_deg: float,
+        inplace: bool = True,
+    ) -> "tuple[float, float, float] | OpenSimModel":
+        """Rotate this whole model rigidly about an axis through ``origin``.
+
+        A thin convenience wrapper equivalent to
+        ``operators.rotate_object(self, origin, direction, angle_deg,
+        inplace=inplace)``: see :func:`~opensim_models.operators.rotate_object`
+        for the full semantics (imported locally to avoid a circular
+        import, since :mod:`opensim_models.operators` itself imports from
+        this module).
+
+        Parameters
+        ----------
+        origin : (x, y, z) coordinate, opensim.Marker, opensim.Joint, or opensim.Frame
+            Pivot point for the rotation, in ground frame.
+        direction : tuple[float, float, float]
+            Direction of the rotation axis through ``origin``, in ground
+            frame. Does not need to be a unit vector.
+        angle_deg : float
+            Rotation angle, in degrees.
+        inplace : bool, optional
+            When ``True`` (default), rotate this model itself and return
+            its ground-attached joint's new position (or a tuple of them,
+            if it has more than one). When ``False``, leave this model
+            untouched and return an independent, rotated *copy* of the
+            whole model instead (see :meth:`copy`).
+
+        Returns
+        -------
+        tuple[float, float, float] or OpenSimModel
+            The new ground-frame position of this model's ground-attached
+            joint (or a tuple of them, if it has more than one), when
+            ``inplace=True``; otherwise the rotated copy of this model.
+        """
+        from .operators import rotate_object
+
+        return rotate_object(self, origin, direction, angle_deg, inplace=inplace)
+
+    def translate(
+        self, direction: tuple[float, float, float], inplace: bool = True
+    ) -> "tuple[float, float, float] | OpenSimModel":
+        """Translate this whole model rigidly by ``direction``.
+
+        A thin convenience wrapper equivalent to
+        ``operators.translate_object(self, direction, inplace=inplace)``:
+        see :func:`~opensim_models.operators.translate_object` for the full
+        semantics (imported locally to avoid a circular import, since
+        :mod:`opensim_models.operators` itself imports from this module).
+
+        Parameters
+        ----------
+        direction : tuple[float, float, float]
+            Displacement ``(dx, dy, dz)``, in ground frame, in metres.
+        inplace : bool, optional
+            When ``True`` (default), translate this model itself and
+            return its ground-attached joint's new position (or a tuple of
+            them, if it has more than one). When ``False``, leave this
+            model untouched and return an independent, translated *copy*
+            of the whole model instead (see :meth:`copy`).
+
+        Returns
+        -------
+        tuple[float, float, float] or OpenSimModel
+            The new ground-frame position of this model's ground-attached
+            joint (or a tuple of them, if it has more than one), when
+            ``inplace=True``; otherwise the translated copy of this model.
+        """
+        from .operators import translate_object
+
+        return translate_object(self, direction, inplace=inplace)
 
     def scale_bodies(self, factors: dict[str, tuple[float, float, float]]) -> None:
         """Scale the complete model through OpenSim's native ScaleSet pipeline.

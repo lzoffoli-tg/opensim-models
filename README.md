@@ -332,6 +332,56 @@ body, joint = operators.add_cylinder_body(
 
 Massa e tensore d'inerzia centrale sono calcolati analiticamente da dimensioni e `density` (default `1000.0` kg/m³, un segnaposto generico come per `OpenSimModel.from_step`), quindi corrispondono sempre esattamente a quanto disegnato. Per default (`mesh=False`) viene collegata una geometria nativa leggera (`opensim.Brick`/`Cylinder`/`Sphere`, senza scrivere alcun file); passando `mesh=True` (e indicando `mesh_dir`) viene invece generata e collegata una vera mesh STL, utile per un export portabile del modello. Il cilindro ha l'asse lungo il proprio Y (come la convenzione nativa di `opensim.Cylinder`): usa `orientation_deg` per orientarlo diversamente. Come per le altre funzioni del modulo, `reinitialize=False` (default) permette di aggiungere più forme primitive in un unico batch dentro `model.structural_change()`.
 
+### Ruotare e traslare un oggetto o un intero modello
+
+`rotate_object`/`translate_object` riposizionano qualcosa che esiste **già** (un marker, il frame statico di un giunto, o un intero modello) -- a differenza delle funzioni `add_*`/`remove_*` viste sopra non serve `reinitialize=`/`model.structural_change()`: lo richiamano da sole.
+
+`rotate_object(obj, origin, direction, angle_deg)` ruota `obj` di `angle_deg` gradi attorno all'asse passante per `origin` e diretto come `direction` (non serve che sia un versore):
+
+```python
+from opensim_models import operators
+
+# ruota l'intero modello di 90° attorno all'asse Z passante per l'origine
+user.rotate((0.0, 0.0, 0.0), (0.0, 0.0, 1.0), 90.0)
+
+# equivalente, chiamando direttamente operators.rotate_object
+operators.rotate_object(user, (0.0, 0.0, 0.0), (0.0, 0.0, 1.0), 90.0)
+```
+
+Su un intero `OpenSimModel` (o `User`/`Screen`), ruota ogni giunto di quel modello collegato direttamente al ground (per `User`, `ground_pelvis`) della stessa quantità: l'intero corpo ruota rigidamente, senza toccare nessun angolo articolare relativo (`hip_flexion_r`, `knee_angle_r`, ...) -- è la generalizzazione di "ruota il bacino per allineare la schiena allo schienale, senza cambiare la postura" di un'analisi ergonomica.
+
+Su un singolo componente, invece, cambia in base al tipo:
+
+- `opensim.Marker`: aggiorna la sua `location` (nel proprio parent frame) -- un marker non ha orientamento, quindi cambia solo la posizione;
+- `opensim.PhysicalOffsetFrame` (es. il parent/child frame di un giunto costruito con `add_weld_joint`/`add_slider_joint`/...): aggiorna sia `translation` che `orientation` -- è così che si può ri-orientare, dopo la costruzione, il posizionamento statico di un giunto impostato inizialmente con `position=`/`orientation_deg=`;
+- qualunque altra cosa accettata (un `Body`, un `Joint`, un `Frame` generico, o una semplice coordinata): non esiste un modo generico per *spostare* questi oggetti (la posizione di un `Body` dipende interamente dal giunto che lo collega, un `Joint` non è di per sé un oggetto posizionabile), quindi la funzione calcola e restituisce la posizione ruotata senza modificare nulla -- utile per calcolare un argomento `position=`/`origin=` per un'altra chiamata (es. costruire un nuovo giunto con `add_weld_joint`) senza effetti collaterali.
+
+`origin` (il perno) può essere una coordinata `(x, y, z)` oppure un qualunque componente con una posizione nel ground frame (un `Marker`, un `Joint`, un `Frame`). Se né `obj` né `origin` sono componenti di un modello (sono entrambi semplici coordinate), `rotate_object` funziona anche senza alcun `OpenSimModel`:
+
+```python
+operators.rotate_object((1.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 1.0), 90.0)  # -> (0.0, 1.0, 0.0)
+```
+
+`translate_object(obj, direction)` è l'equivalente per una traslazione pura: non serve un perno (ogni punto di un corpo rigido trasla della stessa quantità), solo lo spostamento `(dx, dy, dz)`, in metri, nel ground frame. Stessa casistica di `rotate_object` per cosa viene effettivamente modificato (modello intero → ogni giunto agganciato al ground; `Marker`/`PhysicalOffsetFrame` → mutati in place; tutto il resto → sola lettura), con la differenza che una traslazione non tocca mai l'orientamento:
+
+```python
+user.translate((1.0, 0.0, 0.0))  # sposta l'intero User di 1 m lungo X, stessa postura
+```
+
+Entrambe le funzioni accettano `inplace` (default `True`): a `False`, l'oggetto passato **non** viene toccato -- al suo posto viene clonato il modello a cui appartiene (`OpenSimModel.copy()`), la rotazione/traslazione viene applicata alla copia, e viene restituito **l'oggetto modificato dentro quella copia** (non più una semplice posizione):
+
+```python
+marker_ruotato = operators.rotate_object(
+    marker, (0.0, 0.0, 0.0), (0.0, 0.0, 1.0), 90.0, inplace=False
+)
+marker.get_location()           # invariato: il marker originale non è stato toccato
+marker_ruotato.get_location()   # la posizione ruotata, su un marker che vive in un modello clonato
+```
+
+Se `obj` è un intero modello, la copia restituita **è** il modello stesso (ruotato/traslato), non solo un componente al suo interno -- vale anche per `model.rotate(..., inplace=False)`/`model.translate(..., inplace=False)`, che restituiscono una copia indipendente del modello invece della posizione. Sui casi di sola lettura (`Body`, `Joint`, `Frame` generico, coordinata semplice) `inplace` non ha alcun effetto: non c'è mai nulla da modificare, quindi viene sempre restituita la sola posizione calcolata.
+
+`model.rotate(origin, direction, angle_deg, inplace=True)` e `model.translate(direction, inplace=True)` (ereditati da `OpenSimModel`, usati sopra) sono scorciatoie equivalenti a chiamare `operators.rotate_object`/`operators.translate_object` passando il modello stesso come primo argomento -- comode quando si lavora già con un'istanza di modello e non si vuole importare `operators` esplicitamente.
+
 ## Dati ANSUR risolti
 
 Il caricamento del CSV ANSUR e il calcolo dei percentili (`load_ansur`, `resolve_reference`) sono dettagli implementativi interni di `User`, non parte della superficie pubblica del package (vedi sopra). I valori risolti restano comunque accessibili dopo aver costruito un `User`, tramite la proprietà `anthropometry`:
@@ -499,11 +549,11 @@ Per eseguire l'intera suite (test statistici sui dati ANSUR e test di integrazio
 python -m pytest -q
 ```
 
-- `tests/test_model.py` copre `OpenSimModel` in modo esaustivo: caricamento (da file, vuoto, file mancante), sblocco delle coordinate, accessori nominati, gestione di coordinate (posizione, velocità)/marker/muscoli/massa dei corpi, `update_state()` (propagazione a quantità derivate, comportamento "grezzo" dei setter), `reinitialize()` (inclusa la coerenza di coordinate accoppiate da un `CoordinateCouplerConstraint`), `copy()` (indipendenza del modello copiato, preservazione di postura e di attributi delle sottoclassi), scaling, export (inclusa la copia delle mesh in `Geometry/`), cartelle di geometria e l'intera composizione di modelli (`add_model`, `remove_model`, `__add__`, `__radd__`, rinomina automatica sulle collisioni, preservazione della postura degli operandi, controlli di tipo).
+- `tests/test_model.py` copre `OpenSimModel` in modo esaustivo: caricamento (da file, vuoto, file mancante), sblocco delle coordinate, accessori nominati, gestione di coordinate (posizione, velocità)/marker/muscoli/massa dei corpi, `update_state()` (propagazione a quantità derivate, comportamento "grezzo" dei setter), `reinitialize()` (inclusa la coerenza di coordinate accoppiate da un `CoordinateCouplerConstraint`), `copy()` (indipendenza del modello copiato, preservazione di postura e di attributi delle sottoclassi), scaling, export (inclusa la copia delle mesh in `Geometry/`), cartelle di geometria, `rotate()`/`translate()` (corretta delega a `operators.rotate_object`/`translate_object`, inclusa la copia indipendente restituita con `inplace=False`) e l'intera composizione di modelli (`add_model`, `remove_model`, `__add__`, `__radd__`, rinomina automatica sulle collisioni, preservazione della postura degli operandi, controlli di tipo).
 - `tests/test_user.py` copre `User` in modo esaustivo: caricamento e validazione dei dati ANSUR (eseguibili anche senza OpenSim installato), risoluzione di percentile/altezza (inclusa l'estrapolazione PCHIP fuori range con `UserWarning`), scaling antropometrico, ogni singolo setter di postura e la relativa property di lettura, ogni centro articolare (confrontato con la posizione OpenSim nativa) e il dizionario `joint_centers`, le misure derivate geometricamente (lunghezze di coscia/gamba/braccio/avambraccio, altezza del tronco, larghezza spalle) e quelle lette direttamente da ANSUR (circonferenze, profondità, larghezze, inclusa la stima a sezione circolare di coscia/polpaccio), `com`/`cop`/`set_position`, e l'integrazione con la facade ereditata da `OpenSimModel`.
 - `tests/test_screen.py` copre `Screen` in modo esaustivo: dimensionamento (esplicito, da diagonale, priorità e fallback tra i due), posa (`center_*`/`angle_deg`), struttura del modello (un corpo, un `WeldJoint`), rigenerazione della mesh sui setter e registrazione della cartella di geometria.
 - `tests/test_cad_import.py` copre `OpenSimModel.from_step`: massa/inerzia calcolate correttamente da un solido di riferimento (con conversione di unità), generazione della mesh, giunti verso ground di default, combinazione di più solidi in un unico corpo (`as_one_object`, di default e disattivata) e relativi errori (file mancante, STEP senza solidi).
-- `tests/test_operators.py` copre `opensim_models.operators`: `add_component`/`remove_component` generici e i relativi errori, i wrapper nominati per corpi/giunti/forze-muscoli/marker/vincoli, i costruttori di giunto nominati (gradi di libertà, posizione/orientamento), i corpi a forma primitiva (massa/inerzia analitiche, geometria nativa vs mesh generata, tipo di giunto, batching), il collegamento di mesh esistenti a un corpo, l'uso di `structural_change()` per un batch di modifiche correlate (corpo+giunto) e la preservazione della postura delle coordinate non toccate dalla modifica strutturale.
+- `tests/test_operators.py` copre `opensim_models.operators`: `add_component`/`remove_component` generici e i relativi errori, i wrapper nominati per corpi/giunti/forze-muscoli/marker/vincoli, i costruttori di giunto nominati (gradi di libertà, posizione/orientamento), i corpi a forma primitiva (massa/inerzia analitiche, geometria nativa vs mesh generata, tipo di giunto, batching), il collegamento di mesh esistenti a un corpo, l'uso di `structural_change()` per un batch di modifiche correlate (corpo+giunto), la preservazione della postura delle coordinate non toccate dalla modifica strutturale, e `rotate_object`/`translate_object` (mutazione in place di marker e `PhysicalOffsetFrame`, sola lettura su `Body`/`Joint`, perno/oggetto esterni come componente o coordinata, funzionamento standalone senza modello, rotazione/traslazione rigida dell'intero modello attraverso i suoi giunti agganciati al ground, `inplace=False` -- copia indipendente del modello o dell'oggetto, originale invariato -- ed i relativi errori).
 
 I test che richiedono i binding OpenSim vengono saltati automaticamente se il modulo `opensim` non è importabile; quelli di `test_cad_import.py` vengono saltati se `pythonocc-core` non è importabile; i test sui soli dati ANSUR restano eseguibili in ogni caso.
 
