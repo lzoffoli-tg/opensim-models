@@ -15,6 +15,7 @@ from opensim_models import OpenSimModel, User
 from opensim_models.models.user._data import DEFAULT_DATASET, load_ansur, resolve_reference
 from opensim_models.models.user.user import (
     DEFAULT_MESHES_DIR,
+    _FOOT_MARKER_NAMES,
     _JOINT_CENTER_NAMES,
     _POSTURE_COORDINATE_NAMES,
 )
@@ -372,6 +373,29 @@ def test_joint_center_reflects_posture_without_calling_update_state():
     user.set_right_knee_flexionextension(45.0)
 
     assert user.right_knee != pytest.approx(before)
+
+
+@requires_opensim
+@pytest.mark.parametrize("property_name, marker_name", list(_FOOT_MARKER_NAMES.items()))
+def test_foot_marker_property_matches_the_opensim_marker_location(property_name, marker_name):
+    user = make_user(gender="M")
+
+    expected = user.marker(marker_name).getLocationInGround(user.state)
+
+    assert getattr(user, property_name) == pytest.approx(
+        (expected.get(0), expected.get(1), expected.get(2))
+    )
+
+
+@requires_opensim
+def test_foot_markers_dict_matches_every_named_property():
+    user = make_user(gender="M")
+
+    markers = user.foot_markers
+
+    assert set(markers) == set(_FOOT_MARKER_NAMES)
+    for name in _FOOT_MARKER_NAMES:
+        assert markers[name] == pytest.approx(getattr(user, name))
 
 
 @requires_opensim

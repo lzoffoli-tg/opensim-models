@@ -43,6 +43,18 @@ _JOINT_CENTER_NAMES = {
 
 _PELVIS_TRANSLATION_COORDINATES = ("pelvis_tx", "pelvis_ty", "pelvis_tz")
 
+# Friendly name -> OpenSim marker name. The foot has no 1st-metatarsal
+# marker in this model (only the 5th): no landmark is exposed for it rather
+# than guessing one.
+_FOOT_MARKER_NAMES = {
+    "left_heel": "LCAL",
+    "right_heel": "RCAL",
+    "left_toe": "LTOE",
+    "right_toe": "RTOE",
+    "left_mt5": "LMT5",
+    "right_mt5": "RMT5",
+}
+
 # Friendly name -> OpenSim coordinate name, mirroring every set_* posture
 # setter below (same name, minus the "set_" prefix) as a read-only property.
 _POSTURE_COORDINATE_NAMES = {
@@ -158,6 +170,161 @@ class User(OpenSimModel):
         need to call :meth:`update_state` first).
         """
         return {name: self._joint_center(joint) for name, joint in _JOINT_CENTER_NAMES.items()}
+
+    @property
+    def pelvis(self) -> tuple[float, float, float]:
+        """Return the pelvis joint centre in the ground frame, in metres, at the model's current posture."""
+        return self._joint_center("ground_pelvis")
+
+    @property
+    def left_hip(self) -> tuple[float, float, float]:
+        """Return the left hip joint centre in the ground frame, in metres, at the model's current posture."""
+        return self._joint_center("hip_l")
+
+    @property
+    def right_hip(self) -> tuple[float, float, float]:
+        """Return the right hip joint centre in the ground frame, in metres, at the model's current posture."""
+        return self._joint_center("hip_r")
+
+    @property
+    def left_knee(self) -> tuple[float, float, float]:
+        """Return the left knee joint centre in the ground frame, in metres, at the model's current posture."""
+        return self._joint_center("walker_knee_l")
+
+    @property
+    def right_knee(self) -> tuple[float, float, float]:
+        """Return the right knee joint centre in the ground frame, in metres, at the model's current posture."""
+        return self._joint_center("walker_knee_r")
+
+    @property
+    def left_patella(self) -> tuple[float, float, float]:
+        """Return the left patella joint centre in the ground frame, in metres, at the model's current posture."""
+        return self._joint_center("patellofemoral_l")
+
+    @property
+    def right_patella(self) -> tuple[float, float, float]:
+        """Return the right patella joint centre in the ground frame, in metres, at the model's current posture."""
+        return self._joint_center("patellofemoral_r")
+
+    @property
+    def left_ankle(self) -> tuple[float, float, float]:
+        """Return the left ankle joint centre in the ground frame, in metres, at the model's current posture."""
+        return self._joint_center("ankle_l")
+
+    @property
+    def right_ankle(self) -> tuple[float, float, float]:
+        """Return the right ankle joint centre in the ground frame, in metres, at the model's current posture."""
+        return self._joint_center("ankle_r")
+
+    @property
+    def left_subtalar(self) -> tuple[float, float, float]:
+        """Return the left subtalar joint centre in the ground frame, in metres, at the model's current posture."""
+        return self._joint_center("subtalar_l")
+
+    @property
+    def right_subtalar(self) -> tuple[float, float, float]:
+        """Return the right subtalar joint centre in the ground frame, in metres, at the model's current posture."""
+        return self._joint_center("subtalar_r")
+
+    @property
+    def left_mtp(self) -> tuple[float, float, float]:
+        """Return the left mtp joint centre in the ground frame, in metres, at the model's current posture."""
+        return self._joint_center("mtp_l")
+
+    @property
+    def right_mtp(self) -> tuple[float, float, float]:
+        """Return the right mtp joint centre in the ground frame, in metres, at the model's current posture."""
+        return self._joint_center("mtp_r")
+
+    @property
+    def torso(self) -> tuple[float, float, float]:
+        """Return the torso joint centre in the ground frame, in metres, at the model's current posture."""
+        return self._joint_center("back")
+
+    @property
+    def left_shoulder(self) -> tuple[float, float, float]:
+        """Return the left shoulder joint centre in the ground frame, in metres, at the model's current posture."""
+        return self._joint_center("acromial_l")
+
+    @property
+    def right_shoulder(self) -> tuple[float, float, float]:
+        """Return the right shoulder joint centre in the ground frame, in metres, at the model's current posture."""
+        return self._joint_center("acromial_r")
+
+    @property
+    def left_elbow(self) -> tuple[float, float, float]:
+        """Return the left elbow joint centre in the ground frame, in metres, at the model's current posture."""
+        return self._joint_center("elbow_l")
+
+    @property
+    def right_elbow(self) -> tuple[float, float, float]:
+        """Return the right elbow joint centre in the ground frame, in metres, at the model's current posture."""
+        return self._joint_center("elbow_r")
+
+    @property
+    def left_radioulnar(self) -> tuple[float, float, float]:
+        """Return the left radioulnar joint centre in the ground frame, in metres, at the model's current posture."""
+        return self._joint_center("radioulnar_l")
+
+    @property
+    def right_radioulnar(self) -> tuple[float, float, float]:
+        """Return the right radioulnar joint centre in the ground frame, in metres, at the model's current posture."""
+        return self._joint_center("radioulnar_r")
+
+    @property
+    def left_wrist(self) -> tuple[float, float, float]:
+        """Return the left wrist joint centre in the ground frame, in metres, at the model's current posture."""
+        return self._joint_center("radius_hand_l")
+
+    @property
+    def right_wrist(self) -> tuple[float, float, float]:
+        """Return the right wrist joint centre in the ground frame, in metres, at the model's current posture."""
+        return self._joint_center("radius_hand_r")
+
+    def _marker_location(self, marker_name: str) -> tuple[float, float, float]:
+        self.model.realizePosition(self.state)
+        position = self.marker(marker_name).getLocationInGround(self.state)
+        return (position.get(0), position.get(1), position.get(2))
+
+    @property
+    def foot_markers(self) -> dict[str, tuple[float, float, float]]:
+        """Return every foot landmark marker in the ground frame, in metres.
+
+        Reflects the model's current posture (realized automatically; no
+        need to call :meth:`update_state` first). There is no 1st-metatarsal
+        marker in this model (only the 5th, see :attr:`left_mt5`).
+        """
+        return {name: self._marker_location(marker) for name, marker in _FOOT_MARKER_NAMES.items()}
+
+    @property
+    def left_heel(self) -> tuple[float, float, float]:
+        """Return the left heel marker in the ground frame, in metres, at the model's current posture."""
+        return self._marker_location("LCAL")
+
+    @property
+    def right_heel(self) -> tuple[float, float, float]:
+        """Return the right heel marker in the ground frame, in metres, at the model's current posture."""
+        return self._marker_location("RCAL")
+
+    @property
+    def left_toe(self) -> tuple[float, float, float]:
+        """Return the left toe marker in the ground frame, in metres, at the model's current posture."""
+        return self._marker_location("LTOE")
+
+    @property
+    def right_toe(self) -> tuple[float, float, float]:
+        """Return the right toe marker in the ground frame, in metres, at the model's current posture."""
+        return self._marker_location("RTOE")
+
+    @property
+    def left_mt5(self) -> tuple[float, float, float]:
+        """Return the left 5th-metatarsal marker in the ground frame, in metres, at the model's current posture."""
+        return self._marker_location("LMT5")
+
+    @property
+    def right_mt5(self) -> tuple[float, float, float]:
+        """Return the right 5th-metatarsal marker in the ground frame, in metres, at the model's current posture."""
+        return self._marker_location("RMT5")
 
     @property
     def com(self) -> tuple[float, float, float]:
@@ -826,36 +993,250 @@ class User(OpenSimModel):
         """
         self.set_coordinate_degrees("lumbar_rotation", degrees)
 
+    @property
+    def left_hip_flexionextension(self) -> float:
+        """Return the current left hip flexion/extension coordinate in degrees.
 
-def _make_joint_center_property(joint_name: str, friendly_name: str):
-    def getter(self: User) -> tuple[float, float, float]:
-        return self._joint_center(joint_name)
+        Read-only counterpart of ``set_left_hip_flexionextension``.
+        """
+        return self.coordinate_degrees("hip_flexion_l")
 
-    getter.__doc__ = (
-        f"Return the {friendly_name.replace('_', ' ')} joint centre in the ground "
-        "frame, in metres, at the model's current posture."
-    )
-    return property(getter)
+    @property
+    def right_hip_flexionextension(self) -> float:
+        """Return the current right hip flexion/extension coordinate in degrees.
 
+        Read-only counterpart of ``set_right_hip_flexionextension``.
+        """
+        return self.coordinate_degrees("hip_flexion_r")
 
-for _property_name, _joint_name in _JOINT_CENTER_NAMES.items():
-    setattr(User, _property_name, _make_joint_center_property(_joint_name, _property_name))
-del _property_name, _joint_name
+    @property
+    def left_hip_adduction(self) -> float:
+        """Return the current left hip adduction coordinate in degrees.
 
+        Read-only counterpart of ``set_left_hip_adduction``.
+        """
+        return self.coordinate_degrees("hip_adduction_l")
 
-def _make_coordinate_degrees_property(coordinate_name: str, friendly_name: str):
-    def getter(self: User) -> float:
-        return self.coordinate_degrees(coordinate_name)
+    @property
+    def right_hip_adduction(self) -> float:
+        """Return the current right hip adduction coordinate in degrees.
 
-    getter.__doc__ = (
-        f"Return the current {friendly_name.replace('_', ' ')} coordinate in degrees. "
-        f"Read-only counterpart of ``set_{friendly_name}``."
-    )
-    return property(getter)
+        Read-only counterpart of ``set_right_hip_adduction``.
+        """
+        return self.coordinate_degrees("hip_adduction_r")
 
+    @property
+    def left_hip_rotation(self) -> float:
+        """Return the current left hip rotation coordinate in degrees.
 
-for _property_name, _coordinate_name in _POSTURE_COORDINATE_NAMES.items():
-    setattr(
-        User, _property_name, _make_coordinate_degrees_property(_coordinate_name, _property_name)
-    )
-del _property_name, _coordinate_name
+        Read-only counterpart of ``set_left_hip_rotation``.
+        """
+        return self.coordinate_degrees("hip_rotation_l")
+
+    @property
+    def right_hip_rotation(self) -> float:
+        """Return the current right hip rotation coordinate in degrees.
+
+        Read-only counterpart of ``set_right_hip_rotation``.
+        """
+        return self.coordinate_degrees("hip_rotation_r")
+
+    @property
+    def left_knee_flexionextension(self) -> float:
+        """Return the current left knee flexion/extension coordinate in degrees.
+
+        Read-only counterpart of ``set_left_knee_flexionextension``.
+        """
+        return self.coordinate_degrees("knee_angle_l")
+
+    @property
+    def right_knee_flexionextension(self) -> float:
+        """Return the current right knee flexion/extension coordinate in degrees.
+
+        Read-only counterpart of ``set_right_knee_flexionextension``.
+        """
+        return self.coordinate_degrees("knee_angle_r")
+
+    @property
+    def left_ankle_flexiondorsiflexion(self) -> float:
+        """Return the current left ankle flexion/dorsiflexion coordinate in degrees.
+
+        Read-only counterpart of ``set_left_ankle_flexiondorsiflexion``.
+        """
+        return self.coordinate_degrees("ankle_angle_l")
+
+    @property
+    def right_ankle_flexiondorsiflexion(self) -> float:
+        """Return the current right ankle flexion/dorsiflexion coordinate in degrees.
+
+        Read-only counterpart of ``set_right_ankle_flexiondorsiflexion``.
+        """
+        return self.coordinate_degrees("ankle_angle_r")
+
+    @property
+    def left_subtalar_inversion(self) -> float:
+        """Return the current left subtalar inversion coordinate in degrees.
+
+        Read-only counterpart of ``set_left_subtalar_inversion``.
+        """
+        return self.coordinate_degrees("subtalar_angle_l")
+
+    @property
+    def right_subtalar_inversion(self) -> float:
+        """Return the current right subtalar inversion coordinate in degrees.
+
+        Read-only counterpart of ``set_right_subtalar_inversion``.
+        """
+        return self.coordinate_degrees("subtalar_angle_r")
+
+    @property
+    def left_mtp_flexion(self) -> float:
+        """Return the current left mtp flexion coordinate in degrees.
+
+        Read-only counterpart of ``set_left_mtp_flexion``.
+        """
+        return self.coordinate_degrees("mtp_angle_l")
+
+    @property
+    def right_mtp_flexion(self) -> float:
+        """Return the current right mtp flexion coordinate in degrees.
+
+        Read-only counterpart of ``set_right_mtp_flexion``.
+        """
+        return self.coordinate_degrees("mtp_angle_r")
+
+    @property
+    def left_shoulder_flexion(self) -> float:
+        """Return the current left shoulder flexion coordinate in degrees.
+
+        Read-only counterpart of ``set_left_shoulder_flexion``.
+        """
+        return self.coordinate_degrees("arm_flex_l")
+
+    @property
+    def right_shoulder_flexion(self) -> float:
+        """Return the current right shoulder flexion coordinate in degrees.
+
+        Read-only counterpart of ``set_right_shoulder_flexion``.
+        """
+        return self.coordinate_degrees("arm_flex_r")
+
+    @property
+    def left_shoulder_adduction(self) -> float:
+        """Return the current left shoulder adduction coordinate in degrees.
+
+        Read-only counterpart of ``set_left_shoulder_adduction``.
+        """
+        return self.coordinate_degrees("arm_add_l")
+
+    @property
+    def right_shoulder_adduction(self) -> float:
+        """Return the current right shoulder adduction coordinate in degrees.
+
+        Read-only counterpart of ``set_right_shoulder_adduction``.
+        """
+        return self.coordinate_degrees("arm_add_r")
+
+    @property
+    def left_shoulder_rotation(self) -> float:
+        """Return the current left shoulder rotation coordinate in degrees.
+
+        Read-only counterpart of ``set_left_shoulder_rotation``.
+        """
+        return self.coordinate_degrees("arm_rot_l")
+
+    @property
+    def right_shoulder_rotation(self) -> float:
+        """Return the current right shoulder rotation coordinate in degrees.
+
+        Read-only counterpart of ``set_right_shoulder_rotation``.
+        """
+        return self.coordinate_degrees("arm_rot_r")
+
+    @property
+    def left_elbow_flexion(self) -> float:
+        """Return the current left elbow flexion coordinate in degrees.
+
+        Read-only counterpart of ``set_left_elbow_flexion``.
+        """
+        return self.coordinate_degrees("elbow_flex_l")
+
+    @property
+    def right_elbow_flexion(self) -> float:
+        """Return the current right elbow flexion coordinate in degrees.
+
+        Read-only counterpart of ``set_right_elbow_flexion``.
+        """
+        return self.coordinate_degrees("elbow_flex_r")
+
+    @property
+    def left_wrist_flexion(self) -> float:
+        """Return the current left wrist flexion coordinate in degrees.
+
+        Read-only counterpart of ``set_left_wrist_flexion``.
+        """
+        return self.coordinate_degrees("wrist_flex_l")
+
+    @property
+    def right_wrist_flexion(self) -> float:
+        """Return the current right wrist flexion coordinate in degrees.
+
+        Read-only counterpart of ``set_right_wrist_flexion``.
+        """
+        return self.coordinate_degrees("wrist_flex_r")
+
+    @property
+    def left_wrist_deviation(self) -> float:
+        """Return the current left wrist deviation coordinate in degrees.
+
+        Read-only counterpart of ``set_left_wrist_deviation``.
+        """
+        return self.coordinate_degrees("wrist_dev_l")
+
+    @property
+    def right_wrist_deviation(self) -> float:
+        """Return the current right wrist deviation coordinate in degrees.
+
+        Read-only counterpart of ``set_right_wrist_deviation``.
+        """
+        return self.coordinate_degrees("wrist_dev_r")
+
+    @property
+    def left_forearm_pronation(self) -> float:
+        """Return the current left forearm pronation coordinate in degrees.
+
+        Read-only counterpart of ``set_left_forearm_pronation``.
+        """
+        return self.coordinate_degrees("pro_sup_l")
+
+    @property
+    def right_forearm_pronation(self) -> float:
+        """Return the current right forearm pronation coordinate in degrees.
+
+        Read-only counterpart of ``set_right_forearm_pronation``.
+        """
+        return self.coordinate_degrees("pro_sup_r")
+
+    @property
+    def lumbar_extension(self) -> float:
+        """Return the current lumbar extension coordinate in degrees.
+
+        Read-only counterpart of ``set_lumbar_extension``.
+        """
+        return self.coordinate_degrees("lumbar_extension")
+
+    @property
+    def lumbar_bending(self) -> float:
+        """Return the current lumbar bending coordinate in degrees.
+
+        Read-only counterpart of ``set_lumbar_bending``.
+        """
+        return self.coordinate_degrees("lumbar_bending")
+
+    @property
+    def lumbar_rotation(self) -> float:
+        """Return the current lumbar rotation coordinate in degrees.
+
+        Read-only counterpart of ``set_lumbar_rotation``.
+        """
+        return self.coordinate_degrees("lumbar_rotation")
