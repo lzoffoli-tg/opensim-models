@@ -1,3 +1,4 @@
+import math
 import sys
 import tempfile
 from pathlib import Path
@@ -12,7 +13,11 @@ from opensim_models import OpenSimModel, User
 # User only exposes DEFAULT_DATASET/DEFAULT_MESHES_DIR/load_ansur/resolve_reference
 # internally; tests reach into the implementation modules directly to exercise them.
 from opensim_models.models.user._data import DEFAULT_DATASET, load_ansur, resolve_reference
-from opensim_models.models.user.user import DEFAULT_MESHES_DIR
+from opensim_models.models.user.user import (
+    DEFAULT_MESHES_DIR,
+    _JOINT_CENTER_NAMES,
+    _POSTURE_COORDINATE_NAMES,
+)
 
 try:
     import opensim
@@ -57,6 +62,48 @@ POSTURE_SETTERS = [
     ("set_lumbar_extension", "lumbar_extension"),
     ("set_lumbar_bending", "lumbar_bending"),
     ("set_lumbar_rotation", "lumbar_rotation"),
+]
+
+# (property name, ANSUR column) -- every measurement read straight from
+# anthropometry.values, with a simple unit conversion (mm -> m).
+ANSUR_DIRECT_PROPERTIES = [
+    ("left_foot_length", "footlength"),
+    ("right_foot_length", "footlength"),
+    ("left_palm_length", "palmlength"),
+    ("right_palm_length", "palmlength"),
+    ("biacromial_breadth", "biacromialbreadth"),
+    ("left_arm_circumference", "bicepscircumferenceflexed"),
+    ("right_arm_circumference", "bicepscircumferenceflexed"),
+    ("left_forearm_circumference", "forearmcircumferenceflexed"),
+    ("right_forearm_circumference", "forearmcircumferenceflexed"),
+    ("neck_circumference", "neckcircumference"),
+    ("chest_circumference", "chestcircumference"),
+    ("chest_depth", "chestdepth"),
+    ("chest_width", "chestbreadth"),
+    ("waist_circumference", "waistcircumference"),
+    ("waist_depth", "waistdepth"),
+    ("waist_width", "waistbreadth"),
+    ("hip_circumference", "buttockcircumference"),
+    ("hip_depth", "buttockdepth"),
+    ("hip_width", "hipbreadth"),
+    ("left_thigh_circumference", "thighcircumference"),
+    ("right_thigh_circumference", "thighcircumference"),
+    ("left_calf_circumference", "calfcircumference"),
+    ("right_calf_circumference", "calfcircumference"),
+]
+
+# (property name, ANSUR circumference column) -- thigh/calf depth and width
+# have no ANSUR breadth to fit an ellipse against, so both are derived as a
+# circular-section diameter (circumference / pi) from the same column.
+CIRCULAR_SECTION_PROPERTIES = [
+    ("left_thigh_depth", "thighcircumference"),
+    ("right_thigh_depth", "thighcircumference"),
+    ("left_thigh_width", "thighcircumference"),
+    ("right_thigh_width", "thighcircumference"),
+    ("left_calf_depth", "calfcircumference"),
+    ("right_calf_depth", "calfcircumference"),
+    ("left_calf_width", "calfcircumference"),
+    ("right_calf_width", "calfcircumference"),
 ]
 
 
@@ -267,6 +314,208 @@ def test_posture_setters_do_not_cross_talk_between_sides():
     assert user.coordinate_degrees("knee_angle_r") == pytest.approx(0.0)
     assert user.coordinate_degrees("hip_flexion_r") == pytest.approx(25.0)
     assert user.coordinate_degrees("hip_flexion_l") == pytest.approx(0.0)
+
+
+def test_posture_properties_mirror_every_posture_setter():
+    expected = {
+        setter_name[len("set_") :]: coordinate_name
+        for setter_name, coordinate_name in POSTURE_SETTERS
+    }
+
+    assert _POSTURE_COORDINATE_NAMES == expected
+
+
+@requires_opensim
+@pytest.mark.parametrize("property_name, coordinate_name", list(_POSTURE_COORDINATE_NAMES.items()))
+def test_posture_angle_property_reads_back_the_coordinate(property_name, coordinate_name):
+    user = make_user(gender="F")
+
+    user.set_coordinate_degrees(coordinate_name, 12.0)
+
+    assert getattr(user, property_name) == pytest.approx(12.0)
+
+
+# ---------------------------------------------------------------------------
+# Joint centres and derived measurements
+# ---------------------------------------------------------------------------
+
+
+@requires_opensim
+@pytest.mark.parametrize("property_name, joint_name", list(_JOINT_CENTER_NAMES.items()))
+def test_joint_center_property_matches_the_opensim_joint_position(property_name, joint_name):
+    user = make_user(gender="M")
+
+    frame = user.joint(joint_name).getChildFrame()
+    expected = frame.getPositionInGround(user.state)
+
+    assert getattr(user, property_name) == pytest.approx(
+        (expected.get(0), expected.get(1), expected.get(2))
+    )
+
+
+@requires_opensim
+def test_joint_centers_dict_matches_every_named_property():
+    user = make_user(gender="M")
+
+    centers = user.joint_centers
+
+    assert set(centers) == set(_JOINT_CENTER_NAMES)
+    for name in _JOINT_CENTER_NAMES:
+        assert centers[name] == pytest.approx(getattr(user, name))
+
+
+@requires_opensim
+def test_joint_center_reflects_posture_without_calling_update_state():
+    user = make_user(gender="M")
+    before = user.right_knee
+
+    user.set_right_knee_flexionextension(45.0)
+
+    assert user.right_knee != pytest.approx(before)
+
+
+@requires_opensim
+def test_thigh_and_shank_length_match_joint_center_distances():
+    user = make_user(gender="M")
+
+    assert user.right_thigh_length == pytest.approx(math.dist(user.right_hip, user.right_knee))
+    assert user.right_shank_length == pytest.approx(math.dist(user.right_knee, user.right_ankle))
+
+
+@requires_opensim
+def test_arm_and_forearm_length_match_joint_center_distances():
+    user = make_user(gender="M")
+
+    assert user.right_arm_length == pytest.approx(
+        math.dist(user.right_shoulder, user.right_elbow)
+    )
+    assert user.right_forearm_length == pytest.approx(
+        math.dist(user.right_elbow, user.right_wrist)
+    )
+
+
+@requires_opensim
+def test_torso_height_and_shoulder_width_match_joint_center_geometry():
+    user = make_user(gender="M")
+    hip_center = tuple((a + b) / 2 for a, b in zip(user.left_hip, user.right_hip))
+    shoulder_center = tuple((a + b) / 2 for a, b in zip(user.left_shoulder, user.right_shoulder))
+
+    assert user.torso_height == pytest.approx(math.dist(hip_center, shoulder_center))
+    assert user.shoulder_width == pytest.approx(math.dist(user.left_shoulder, user.right_shoulder))
+
+
+@requires_opensim
+def test_shoulder_width_and_biacromial_breadth_are_independent_measures():
+    user = make_user(gender="M")
+
+    assert user.shoulder_width != pytest.approx(user.biacromial_breadth)
+    assert user.shoulder_width > 0
+    assert user.biacromial_breadth > 0
+
+
+@requires_opensim
+def test_left_foot_height_is_the_ankle_joint_height():
+    user = make_user(gender="M")
+
+    assert user.left_foot_height == pytest.approx(user.left_ankle[1])
+    assert user.right_foot_height == pytest.approx(user.right_ankle[1])
+
+
+@requires_opensim
+@pytest.mark.parametrize("property_name, ansur_column", ANSUR_DIRECT_PROPERTIES)
+def test_ansur_direct_property_matches_resolved_measurement(property_name, ansur_column):
+    user = make_user(gender="M")
+
+    assert getattr(user, property_name) == pytest.approx(
+        user.anthropometry.values[ansur_column] / 1000.0
+    )
+
+
+@requires_opensim
+@pytest.mark.parametrize("property_name, circumference_column", CIRCULAR_SECTION_PROPERTIES)
+def test_circular_section_property_derives_diameter_from_circumference(
+    property_name, circumference_column
+):
+    user = make_user(gender="M")
+
+    expected = user.anthropometry.values[circumference_column] / 1000.0 / math.pi
+
+    assert getattr(user, property_name) == pytest.approx(expected)
+
+
+@requires_opensim
+def test_thigh_and_calf_width_equal_depth_under_the_circular_assumption():
+    user = make_user(gender="M")
+
+    assert user.left_thigh_width == pytest.approx(user.left_thigh_depth)
+    assert user.right_thigh_width == pytest.approx(user.right_thigh_depth)
+    assert user.left_calf_width == pytest.approx(user.left_calf_depth)
+    assert user.right_calf_width == pytest.approx(user.right_calf_depth)
+
+
+@requires_opensim
+def test_com_is_finite_and_above_the_ground():
+    user = make_user(gender="M")
+
+    x, y, z = user.com
+
+    assert all(math.isfinite(value) for value in (x, y, z))
+    assert y > 0
+
+
+@requires_opensim
+def test_cop_is_the_vertical_projection_of_com_onto_the_ground():
+    user = make_user(gender="M")
+
+    com = user.com
+
+    assert user.cop == pytest.approx((com[0], 0.0, com[2]))
+
+
+@requires_opensim
+def test_set_position_moves_the_reference_point_to_the_target():
+    user = make_user(gender="M")
+
+    user.set_position(user.cop, 1.0, 0.0, 0.5)
+
+    assert user.cop == pytest.approx((1.0, 0.0, 0.5))
+
+
+@requires_opensim
+def test_set_position_is_a_rigid_translation_that_preserves_posture():
+    user = make_user(gender="M")
+    user.set_right_knee_flexionextension(30.0)
+    angle_before = user.right_knee_flexionextension
+    thigh_length_before = user.right_thigh_length
+
+    user.set_position(user.com, 3.0, 0.0, -1.0)
+
+    assert user.right_knee_flexionextension == pytest.approx(angle_before)
+    assert user.right_thigh_length == pytest.approx(thigh_length_before)
+
+
+@requires_opensim
+def test_set_position_rejects_non_finite_target():
+    user = make_user(gender="M")
+
+    with pytest.raises(ValueError, match="finite"):
+        user.set_position(user.com, float("nan"), 0.0, 0.0)
+
+
+@requires_opensim
+def test_out_of_range_height_user_builds_with_positive_derived_measurements():
+    with pytest.warns(UserWarning, match="outside ANSUR range"):
+        user = make_user(gender="F", height=210.0)
+
+    for name in (
+        "left_thigh_circumference",
+        "chest_depth",
+        "chest_width",
+        "left_arm_length",
+        "right_shank_length",
+        "torso_height",
+    ):
+        assert getattr(user, name) > 0
 
 
 # ---------------------------------------------------------------------------

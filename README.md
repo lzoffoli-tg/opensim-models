@@ -37,7 +37,7 @@ Il modello di `User` referenzia 81 mesh VTP, tutte incluse nella cartella `model
 
 ## Installazione
 
-Il package richiede Python 3.10 o superiore, NumPy e Pandas. I binding Python di OpenSim sono una dipendenza nativa opzionale, necessaria solo per costruire/scalare/visualizzare un modello effettivo:
+Il package richiede Python 3.10 o superiore, NumPy, Pandas e SciPy (quest'ultima usata per l'estrapolazione PCHIP di `User` quando l'altezza richiesta esce dal range ANSUR, vedi sotto). I binding Python di OpenSim sono una dipendenza nativa opzionale, necessaria solo per costruire/scalare/visualizzare un modello effettivo:
 
 ```powershell
 python -m pip install -e ".[test,opensim]"
@@ -91,16 +91,29 @@ Il percentile deve appartenere all'intervallo inclusivo `[0.1, 99.9]`. Il calcol
 
 ### Altezza esplicita
 
-L'altezza è espressa in centimetri. Il package calcola il percentile empirico della statura richiesta nel gruppo ANSUR del sesso indicato e applica quel percentile a tutte le misure:
+L'altezza è espressa in centimetri. Quando `height` è presente, ogni misura numerica (statura compresa) viene risolta **direttamente da quell'altezza**, tramite una regressione PCHIP per-misura contro i soggetti ANSUR del sesso indicato, e ha precedenza su `percentile`:
 
 ```python
 user = User("M", height=175.0)
 
-print(user.height)       # statura ANSUR risolta in centimetri
-print(user.percentile)   # percentile empirico corrispondente a 175 cm
+print(user.height)       # 175.0: esattamente l'altezza richiesta
+print(user.percentile)   # percentile empirico corrispondente a 175 cm, solo informativo
 ```
 
-Quando `height` è presente, determina il percentile effettivo e ha precedenza sul valore passato in `percentile`. L'altezza deve essere positiva e compresa nel range osservato dal dataset ANSUR.
+Il percentile riportato da `user.percentile` è calcolato a parte (percentile empirico della statura nel gruppo ANSUR del sesso indicato) ed è puramente informativo: le misure non passano più da un lookup per percentile, quindi `user.height` coincide esattamente con l'altezza richiesta, non è più una statura ANSUR approssimata.
+
+Un'altezza fuori dal range osservato da ANSUR per quel sesso **non viene più rifiutata**: viene estrapolata (con SciPy `PchipInterpolator`, coda lineare oltre i dati per evitare oscillazioni della cubica) sia per il percentile sia per ogni singola misura, ed emette un `UserWarning`:
+
+```python
+import warnings
+
+with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    tall_user = User("M", height=205.0)  # oltre il massimo ANSUR maschile (~199 cm)
+
+print(caught[0].category)   # UserWarning
+print(tall_user.height)     # 205.0
+```
 
 ## Scaling antropometrico
 
@@ -197,6 +210,16 @@ I setter che agiscono su una coordinata con lato (anca, ginocchio, caviglia, pie
 - pronazione/supinazione dell'avambraccio.
 
 I setter lombari non hanno lato e restano invariati: estensione, inclinazione laterale e rotazione lombare.
+
+Ognuno di questi setter ha una property di sola lettura omonima (senza `set_`), equivalente a `coordinate_degrees(...)` ma già legata al nome specifico della coordinata:
+
+```python
+print(user.left_hip_flexionextension)    # 0.0
+user.set_left_hip_flexionextension(25.0)
+print(user.left_hip_flexionextension)    # 25.0
+print(user.right_knee_flexionextension)
+print(user.lumbar_extension)
+```
 
 È inoltre disponibile il setter generico (ereditato da `OpenSimModel`), utilizzabile su qualunque coordinata del modello:
 
@@ -323,6 +346,56 @@ print(reference.values["footlength"])
 
 Le misure lineari ANSUR restano nelle unità sorgente, prevalentemente millimetri. `stature_m` è in metri; `height_cm` è una proprietà di comodo in centimetri.
 
+## Centri articolari e misure derivate
+
+Oltre ad `anthropometry`, `User` espone una serie di proprietà pubbliche di comodo, tutte in metri.
+
+**Centri articolari** -- posizione `(x, y, z)` nel ground frame di ogni giunto del modello, più il dizionario `joint_centers` con tutti insieme:
+
+```python
+print(user.left_hip)        # (x, y, z) in metri
+print(user.right_ankle)
+print(user.joint_centers)   # {"pelvis": (...), "left_hip": (...), ...}
+```
+
+Sono disponibili: `pelvis`, `left_hip`/`right_hip`, `left_knee`/`right_knee`, `left_patella`/`right_patella`, `left_ankle`/`right_ankle`, `left_subtalar`/`right_subtalar`, `left_mtp`/`right_mtp`, `torso`, `left_shoulder`/`right_shoulder`, `left_elbow`/`right_elbow`, `left_radioulnar`/`right_radioulnar`, `left_wrist`/`right_wrist`.
+
+Queste proprietà riflettono la **postura corrente** del modello (sono calcolate da `getPositionInGround`, con un `realizePosition` automatico, quindi funzionano anche subito dopo un setter di postura, senza dover chiamare `update_state()` prima). Se cambi una coordinata, il valore letto rispecchia la nuova posa:
+
+```python
+user.set_right_knee_flexionextension(45.0)
+print(user.right_knee)  # posizione aggiornata, nessun update_state() necessario
+```
+
+**Centro di massa e sua proiezione a terra**: `com` (centro di massa dell'intero modello nel ground frame) e `cop` (proiezione verticale di `com` sul piano a terra, `y = 0`) -- `cop` qui è una semplice proiezione cinematica di `com`, non un centro di pressione dinamico calcolato dalle forze di contatto:
+
+```python
+print(user.com)  # (x, y, z) del baricentro
+print(user.cop)  # (x, 0.0, z): stessa x/z di com, proiettato a terra
+```
+
+**Traslare il modello**: `set_position(reference, x, y, z)` sposta rigidamente l'intero `User` (attraverso le coordinate di traslazione del bacino, `pelvis_tx`/`pelvis_ty`/`pelvis_tz`) in modo che il punto `reference` -- qualunque posizione nel ground frame già nota, es. `com`, `cop`, o una qualunque entry di `joint_centers`/`left_ankle`/... -- finisca esattamente in `(x, y, z)`. La postura relativa (angoli delle articolazioni) non cambia, chiama internamente `update_state()`:
+
+```python
+user.set_position(user.cop, 0.0, 0.0, 0.0)  # centra la proiezione a terra del CoM nell'origine
+user.set_position(user.left_ankle, 1.0, 0.0, 0.3)  # porta la caviglia sinistra in un punto preciso
+```
+
+**Lunghezze geometriche** -- distanza fra due centri articolari, quindi anch'esse dipendenti dalla postura corrente: `left_arm_length`/`right_arm_length` (spalla-gomito), `left_forearm_length`/`right_forearm_length` (gomito-polso), `left_thigh_length`/`right_thigh_length` (anca-ginocchio), `left_shank_length`/`right_shank_length` (ginocchio-caviglia), `torso_height` (centro anche - centro spalle), `shoulder_width` (centro spalla sinistra - centro spalla destra).
+
+**Misure dirette da ANSUR** -- nessun centro articolare affidabile nel modello scheletrico per queste dimensioni, quindi vengono lette dal valore ANSUR già risolto (`anthropometry.values`), indipendenti dalla postura:
+
+- lunghezze: `left_foot_length`/`right_foot_length`, `left_palm_length`/`right_palm_length` (solo palmo, non le dita);
+- l'altezza da terra del piede è approssimata dall'altezza del centro della caviglia: `left_foot_height`/`right_foot_height` (questa sì dipende dalla postura);
+- `biacromial_breadth` -- distanza bi-acromiale ANSUR, da confrontare con `shoulder_width` (geometrica, vedi sopra: le due non coincidono, perché la spaziatura dei giunti di spalla sul corpo `torso` non è scalata esplicitamente sulla larghezza bi-acromiale, ma con il rapporto di statura generico, vedi "Scaling antropometrico");
+- circonferenze: `left_arm_circumference`/`right_arm_circumference` (bicipite flesso), `left_forearm_circumference`/`right_forearm_circumference` (avambraccio flesso), `neck_circumference`, `chest_circumference`, `waist_circumference`, `hip_circumference` (glutei), `left_thigh_circumference`/`right_thigh_circumference`, `left_calf_circumference`/`right_calf_circumference`;
+- profondità sagittali misurate direttamente da ANSUR: `chest_depth`, `waist_depth`, `hip_depth` (glutei);
+- larghezze (breadth) misurate direttamente da ANSUR: `chest_width`, `waist_width`, `hip_width` (glutei).
+
+**Profondità e larghezze stimate** -- coscia e polpaccio non hanno né profondità né larghezza ANSUR con cui fittare un'ellisse: `left_thigh_depth`/`right_thigh_depth`/`left_thigh_width`/`right_thigh_width` e i rispettivi `*_calf_*` assumono quindi una sezione circolare (`diametro = circonferenza / π`), un'approssimazione, non una misura ANSUR diretta -- per ciascun lato, `*_width` e `*_depth` coincidono (un cerchio ha un solo diametro).
+
+Non sono disponibili le lunghezze delle singole dita della mano: né ANSUR II né il modello OpenSim Rajagopal-Lai-Uhlrich (il corpo `hand` è un unico rigido, senza giunti per le falangi) contengono questo dato.
+
 ## Rendering
 
 Ogni modello registra automaticamente la propria cartella di mesh: per `User` non serve indicare alcun percorso di geometria.
@@ -427,7 +500,7 @@ python -m pytest -q
 ```
 
 - `tests/test_model.py` copre `OpenSimModel` in modo esaustivo: caricamento (da file, vuoto, file mancante), sblocco delle coordinate, accessori nominati, gestione di coordinate (posizione, velocità)/marker/muscoli/massa dei corpi, `update_state()` (propagazione a quantità derivate, comportamento "grezzo" dei setter), `reinitialize()` (inclusa la coerenza di coordinate accoppiate da un `CoordinateCouplerConstraint`), `copy()` (indipendenza del modello copiato, preservazione di postura e di attributi delle sottoclassi), scaling, export (inclusa la copia delle mesh in `Geometry/`), cartelle di geometria e l'intera composizione di modelli (`add_model`, `remove_model`, `__add__`, `__radd__`, rinomina automatica sulle collisioni, preservazione della postura degli operandi, controlli di tipo).
-- `tests/test_user.py` copre `User` in modo esaustivo: caricamento e validazione dei dati ANSUR (eseguibili anche senza OpenSim installato), risoluzione di percentile/altezza, scaling antropometrico, ogni singolo setter di postura, e l'integrazione con la facade ereditata da `OpenSimModel`.
+- `tests/test_user.py` copre `User` in modo esaustivo: caricamento e validazione dei dati ANSUR (eseguibili anche senza OpenSim installato), risoluzione di percentile/altezza (inclusa l'estrapolazione PCHIP fuori range con `UserWarning`), scaling antropometrico, ogni singolo setter di postura e la relativa property di lettura, ogni centro articolare (confrontato con la posizione OpenSim nativa) e il dizionario `joint_centers`, le misure derivate geometricamente (lunghezze di coscia/gamba/braccio/avambraccio, altezza del tronco, larghezza spalle) e quelle lette direttamente da ANSUR (circonferenze, profondità, larghezze, inclusa la stima a sezione circolare di coscia/polpaccio), `com`/`cop`/`set_position`, e l'integrazione con la facade ereditata da `OpenSimModel`.
 - `tests/test_screen.py` copre `Screen` in modo esaustivo: dimensionamento (esplicito, da diagonale, priorità e fallback tra i due), posa (`center_*`/`angle_deg`), struttura del modello (un corpo, un `WeldJoint`), rigenerazione della mesh sui setter e registrazione della cartella di geometria.
 - `tests/test_cad_import.py` copre `OpenSimModel.from_step`: massa/inerzia calcolate correttamente da un solido di riferimento (con conversione di unità), generazione della mesh, giunti verso ground di default, combinazione di più solidi in un unico corpo (`as_one_object`, di default e disattivata) e relativi errori (file mancante, STEP senza solidi).
 - `tests/test_operators.py` copre `opensim_models.operators`: `add_component`/`remove_component` generici e i relativi errori, i wrapper nominati per corpi/giunti/forze-muscoli/marker/vincoli, i costruttori di giunto nominati (gradi di libertà, posizione/orientamento), i corpi a forma primitiva (massa/inerzia analitiche, geometria nativa vs mesh generata, tipo di giunto, batching), il collegamento di mesh esistenti a un corpo, l'uso di `structural_change()` per un batch di modifiche correlate (corpo+giunto) e la preservazione della postura delle coordinate non toccate dalla modifica strutturale.
@@ -438,7 +511,9 @@ I test che richiedono i binding OpenSim vengono saltati automaticamente se il mo
 
 - Lo scaling è completo a livello di pipeline OpenSim, ma la qualità antropometrica dipende dalla corrispondenza tra misura ANSUR e segmento.
 - Le misure senza corrispondenza diretta usano il rapporto di statura come fallback esplicito.
-- L'altezza richiesta viene trasformata nel percentile ANSUR equivalente; per questo `user.height` può differire leggermente dall'input originale.
+- Un'altezza fuori dal range ANSUR osservato viene estrapolata (PCHIP con coda lineare) ed emette un `UserWarning`: più l'altezza richiesta è lontana dal range osservato, meno affidabile è l'estrapolazione.
+- Le lunghezze/larghezze/profondità di coscia e polpaccio non hanno un corrispondente ANSUR diretto per tutti gli assi: dove manca una larghezza misurata, la profondità è stimata assumendo una sezione circolare (`diametro = circonferenza / π`), non una misura reale.
+- Le lunghezze delle singole dita della mano non sono disponibili: né ANSUR II né il modello OpenSim di `User` le contengono.
 - La composizione di modelli (`add_model`/`__add__`) è pensata per scheletri/oggetti indipendenti agganciati al ground: non offre (ancora) un modo per saldare un modello a un body specifico dell'altro.
 - Sono richiesti binding OpenSim compatibili con la versione del modello e con l'interprete Python attivo.
 - `OpenSimModel.from_step` non deduce alcuna gerarchia cinematica dal file CAD (un file STEP non la contiene): i `FreeJoint` generati di default vanno sostituiti con i giunti reali dell'assieme prima di affidarsi alla dinamica del modello.

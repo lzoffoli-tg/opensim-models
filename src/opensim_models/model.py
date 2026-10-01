@@ -95,7 +95,10 @@ def import_opensim() -> Any:
 
     Fixes up the native ``PATH`` (see :func:`_ensure_visualizer_dll_path`)
     before importing, so any OpenSim usage -- not just visualization -- runs
-    with the required native libraries reachable.
+    with the required native libraries reachable. Also raises OpenSim's
+    console log threshold above ``Info``, so routine messages (e.g. "Loaded
+    model ..." on every model load) stay silent while ``Warn``/``Error``
+    messages still surface.
 
     Returns
     -------
