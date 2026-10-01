@@ -195,6 +195,7 @@ class OpenSimModel:
         self._anchor_names: set[str] = set()
         self._merged: dict[int, list[tuple[str, str]]] = {}
         self._visualizer: Any | None = None
+        self._player: Any | None = None
         _register_owner(self)
 
     def copy(self) -> "OpenSimModel":
@@ -223,6 +224,7 @@ class OpenSimModel:
         clone._anchor_names = set(self._anchor_names)
         clone._merged = dict(self._merged)
         clone._visualizer = None
+        clone._player = None
         _register_owner(clone)
         return clone
 
@@ -1133,7 +1135,14 @@ class OpenSimModel:
         """Return the native OpenSim visualizer after :meth:`show` starts it."""
         return self._visualizer
 
-    def show(self, geometry_path: str | Path | None = None) -> None:
+    def show(
+        self,
+        geometry_path: str | Path | None = None,
+        *,
+        motion: str | Path | Any | None = None,
+        loop: bool = False,
+        fps: float = 30.0,
+    ) -> None:
         """Open a native Simbody window showing the current model state.
 
         The visualizer is initialized lazily. If enabling it requires a new
@@ -1145,11 +1154,32 @@ class OpenSimModel:
         geometry_path : str, pathlib.Path or None, optional
             Extra geometry search directory, in addition to any registered
             via :meth:`add_geometry_directory`.
+        motion : str, pathlib.Path, opensim.TimeSeriesTable, or None, optional
+            A motion to animate: a motion file path (``.mot``/``.sto``), or
+            an already-loaded/built ``opensim.TimeSeriesTable`` (e.g. one
+            written by a prior analysis). When given, also opens a small Tk
+            playback control window (play/pause, stop, fast-forward,
+            fast-backward, a loop/cycle toggle, and a draggable progress
+            slider) alongside the visualizer -- see
+            :func:`~opensim_models._player.start_player` for exactly what
+            it drives and its threading caveats. Defaults to ``None`` (no
+            playback controls, just the current static posture, as before
+            this parameter existed).
+        loop : bool, optional
+            Initial state of the playback window's cycle/loop toggle.
+            Ignored if ``motion`` is ``None``. Defaults to ``False``.
+        fps : float, optional
+            Target refresh rate for advancing playback and redrawing the
+            visualizer, in frames per second. Ignored if ``motion`` is
+            ``None``. Defaults to ``30.0``.
 
         Raises
         ------
         RuntimeError
             If OpenSim cannot create or expose its visualizer.
+        ValueError
+            If ``motion`` resolves to fewer than 2 rows or a non-increasing
+            time column.
         """
         coordinates = self._capture_coordinate_values()
         self.model.setUseVisualizer(True)
@@ -1174,6 +1204,19 @@ class OpenSimModel:
                 "directory (containing the Simbody/OpenGL DLLs) is missing "
                 "from PATH."
             ) from error
+
+        if motion is not None:
+            from ._player import start_player
+
+            self._player = start_player(self, motion, loop=loop, fps=fps)
+
+    @property
+    def player(self) -> Any | None:
+        """Return the playback state machine started by the last ``show(motion=...)`` call.
+
+        ``None`` if :meth:`show` was never called with a ``motion``.
+        """
+        return self._player
 
     def _capture_coordinate_values(self) -> dict[str, float]:
         coordinates = self.model.getCoordinateSet()
