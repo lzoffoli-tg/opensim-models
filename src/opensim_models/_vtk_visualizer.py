@@ -55,16 +55,11 @@ this reason -- it is a visibility fix, not a cosmetic one.
 from __future__ import annotations
 
 import threading
-from pathlib import Path
 from typing import Any
 
-__all__ = ["VTKVisualizer", "DEFAULT_SIZE"]
+from . import _geometry
 
-_READER_BY_SUFFIX = {
-    ".vtp": "vtkXMLPolyDataReader",
-    ".stl": "vtkSTLReader",
-    ".obj": "vtkOBJReader",
-}
+__all__ = ["VTKVisualizer", "DEFAULT_SIZE"]
 
 #: Initial render window size in pixels, as (width, height). Exposed so
 #: :mod:`opensim_models._player` can size its viewer frame to match before
@@ -209,8 +204,9 @@ class VTKVisualizer:
     def _build_actors(self) -> None:
         opensim = self._model.opensim
         model_name = self._model.model.getName() or type(self._model).__name__
-        for index in range(self._model.bodies.getSize()):
-            body = self._model.bodies.get(index)
+        body_set = self._model.model.getBodySet()
+        for index in range(body_set.getSize()):
+            body = body_set.get(index)
             self._add_body_actors(body, model_name, opensim)
 
     def _add_body_actors(self, body: Any, model_name: str, opensim: Any) -> None:
@@ -237,53 +233,12 @@ class VTKVisualizer:
         """Return a VTK source/reader for one attached ``DecorativeGeometry``.
 
         ``None`` for a mesh whose file can't be resolved, or a geometry
-        type not handled (only ``Mesh``/``Brick``/``Cylinder``/``Sphere``
-        -- what :mod:`opensim_models.operators`'s ``add_box_body``/
-        ``add_cylinder_body``/``add_sphere_body`` and every bundled model's
-        own mesh attach -- are).
+        type not handled -- see :func:`opensim_models._geometry.build_source`,
+        shared with :class:`~opensim_models.components.Body`'s ``.corners``.
         """
-        mesh = opensim.Mesh.safeDownCast(geometry)
-        if mesh is not None:
-            return self._reader_for_file(mesh.get_mesh_file())
-
-        brick = opensim.Brick.safeDownCast(geometry)
-        if brick is not None:
-            half_lengths = brick.get_half_lengths()
-            source = self._vtk.vtkCubeSource()
-            source.SetXLength(half_lengths.get(0) * 2.0)
-            source.SetYLength(half_lengths.get(1) * 2.0)
-            source.SetZLength(half_lengths.get(2) * 2.0)
-            return source
-
-        cylinder = opensim.Cylinder.safeDownCast(geometry)
-        if cylinder is not None:
-            source = self._vtk.vtkCylinderSource()
-            source.SetRadius(cylinder.get_radius())
-            source.SetHeight(cylinder.get_half_height() * 2.0)
-            source.SetResolution(32)
-            return source
-
-        sphere = opensim.Sphere.safeDownCast(geometry)
-        if sphere is not None:
-            source = self._vtk.vtkSphereSource()
-            source.SetRadius(sphere.get_radius())
-            source.SetThetaResolution(32)
-            source.SetPhiResolution(32)
-            return source
-
-        return None
-
-    def _reader_for_file(self, filename: str) -> Any | None:
-        path = self._model._resolve_geometry_file(filename)
-        if path is None:
-            return None
-        reader_class_name = _READER_BY_SUFFIX.get(Path(filename).suffix.lower())
-        if reader_class_name is None:
-            return None
-        reader = getattr(self._vtk, reader_class_name)()
-        reader.SetFileName(str(path))
-        reader.Update()
-        return reader
+        return _geometry.build_source(
+            self._vtk, opensim, geometry, self._model._resolve_geometry_file
+        )
 
     def _on_mouse_move(self, _obj: Any, _event: str) -> None:
         x, y = self._interactor.GetEventPosition()

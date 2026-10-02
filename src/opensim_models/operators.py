@@ -19,7 +19,7 @@ leave every call's ``reinitialize`` at its default ``False``:
 
 >>> with model.structural_change():
 ...     body = operators.add_body(model, "b1", mass=2.0)
-...     operators.add_joint(model, model.opensim.FreeJoint("b1_to_ground", model.model.getGround(), body))
+...     operators.add_joint(model, model.opensim.FreeJoint("b1_to_ground", model.model.getGround(), body.raw))
 
 :func:`rotate_object`/:func:`translate_object` are a different kind of
 operator: they don't add or remove anything, only reposition what's
@@ -41,7 +41,8 @@ from typing import Any
 
 import numpy as np
 
-from .model import OpenSimModel, _find_owner
+from . import components
+from .model import OpenSimModel, _find_owner, _iter_set
 
 __all__ = [
     "add_component",
@@ -87,6 +88,21 @@ _COMPONENT_SET_GETTERS: dict[str, str] = {
     "contact_geometry": "updContactGeometrySet",
     "probe": "updProbeSet",
 }
+
+
+def _unwrap(thing: Any) -> Any:
+    """Return ``thing.raw`` if ``thing`` is a :mod:`opensim_models.components`
+    wrapper, else ``thing`` unchanged.
+
+    Every function in this module that accepts a component (a body, a
+    joint's ``parent_frame``, a marker/frame to rotate, ...) needs to work
+    whether the caller passes the raw ``opensim`` object or the
+    Python-friendly wrapper :class:`~opensim_models.model.OpenSimModel`'s
+    own accessors now return (e.g. ``model.body(name)``) -- this is the
+    one place that difference is absorbed, rather than teaching every
+    ``isinstance``/``safeDownCast`` check here about the wrapper type.
+    """
+    return getattr(thing, "raw", thing)
 
 
 def _component_set(model: "OpenSimModel", kind: str) -> Any:
@@ -244,7 +260,7 @@ def add_body(
 
     Returns
     -------
-    opensim.Body
+    components.Body
         The newly created body.
     """
     body = model.opensim.Body(
@@ -257,7 +273,7 @@ def add_body(
     _attach_mesh_files(model, body, mesh_files)
     if reinitialize:
         model.reinitialize()
-    return body
+    return components.Body(model, body)
 
 
 def remove_body(
@@ -306,10 +322,12 @@ def add_joint(model: "OpenSimModel", joint: Any, *, reinitialize: bool = False) 
 
     Returns
     -------
-    opensim.Joint
-        ``joint``, for chaining.
+    components.Joint
+        ``joint``, wrapped, for chaining.
     """
-    return add_component(model, "joint", joint, reinitialize=reinitialize)
+    joint = _unwrap(joint)
+    add_component(model, "joint", joint, reinitialize=reinitialize)
+    return components.Joint(model, joint)
 
 
 def remove_joint(
@@ -353,6 +371,8 @@ def _add_offset_joint(
     child_orientation_deg: tuple[float, float, float],
     reinitialize: bool,
 ) -> Any:
+    child_body = _unwrap(child_body)
+    parent_frame = _unwrap(parent_frame)
     joint_class = getattr(model.opensim, _JOINT_CLASSES[joint_type])
     joint = joint_class(
         name,
@@ -363,7 +383,8 @@ def _add_offset_joint(
         model.opensim.Vec3(*child_position),
         model.opensim.Vec3(*np.deg2rad(child_orientation_deg)),
     )
-    return add_component(model, "joint", joint, reinitialize=reinitialize)
+    add_component(model, "joint", joint, reinitialize=reinitialize)
+    return components.Joint(model, joint)
 
 
 def add_free_joint(
@@ -408,8 +429,8 @@ def add_free_joint(
 
     Returns
     -------
-    opensim.FreeJoint
-        The newly created joint.
+    components.Joint
+        The newly created joint, wrapped.
     """
     return _add_offset_joint(
         model,
@@ -445,8 +466,8 @@ def add_pin_joint(
 
     Returns
     -------
-    opensim.PinJoint
-        The newly created joint.
+    components.Joint
+        The newly created joint, wrapped.
     """
     return _add_offset_joint(
         model,
@@ -480,8 +501,8 @@ def add_ball_joint(
 
     Returns
     -------
-    opensim.BallJoint
-        The newly created joint.
+    components.Joint
+        The newly created joint, wrapped.
     """
     return _add_offset_joint(
         model,
@@ -517,8 +538,8 @@ def add_slider_joint(
 
     Returns
     -------
-    opensim.SliderJoint
-        The newly created joint.
+    components.Joint
+        The newly created joint, wrapped.
     """
     return _add_offset_joint(
         model,
@@ -552,8 +573,8 @@ def add_weld_joint(
 
     Returns
     -------
-    opensim.WeldJoint
-        The newly created joint.
+    components.Joint
+        The newly created joint, wrapped.
     """
     return _add_offset_joint(
         model,
@@ -612,7 +633,7 @@ def _add_primitive_body(
     def build() -> tuple[Any, Any]:
         body = add_body(model, name, mass, inertia=inertia, mesh_files=mesh_files)
         if not mesh:
-            body.attachGeometry(native_geometry_factory())
+            body.raw.attachGeometry(native_geometry_factory())
         joint = _JOINT_ADDERS[joint_type](
             model,
             f"{name}_joint",
@@ -681,7 +702,7 @@ def add_box_body(
 
     Returns
     -------
-    tuple[opensim.Body, opensim.Joint]
+    tuple[components.Body, components.Joint]
         The newly created body and the joint connecting it to ground.
 
     Raises
@@ -778,7 +799,7 @@ def add_cylinder_body(
 
     Returns
     -------
-    tuple[opensim.Body, opensim.Joint]
+    tuple[components.Body, components.Joint]
         The newly created body and the joint connecting it to ground.
 
     Raises
@@ -869,7 +890,7 @@ def add_sphere_body(
 
     Returns
     -------
-    tuple[opensim.Body, opensim.Joint]
+    tuple[components.Body, components.Joint]
         The newly created body and the joint connecting it to ground.
 
     Raises
@@ -925,10 +946,12 @@ def add_force(model: "OpenSimModel", force: Any, *, reinitialize: bool = False) 
 
     Returns
     -------
-    opensim.Force
-        ``force``, for chaining.
+    components.Force
+        ``force``, wrapped, for chaining.
     """
-    return add_component(model, "force", force, reinitialize=reinitialize)
+    force = _unwrap(force)
+    add_component(model, "force", force, reinitialize=reinitialize)
+    return components.Force(model, force)
 
 
 def remove_force(
@@ -970,10 +993,12 @@ def add_muscle(
 
     Returns
     -------
-    opensim.Muscle
-        ``muscle``, for chaining.
+    components.Muscle
+        ``muscle``, wrapped, for chaining.
     """
-    return add_force(model, muscle, reinitialize=reinitialize)
+    muscle = _unwrap(muscle)
+    add_component(model, "force", muscle, reinitialize=reinitialize)
+    return components.Muscle(model, muscle)
 
 
 def remove_muscle(
@@ -1009,10 +1034,12 @@ def add_marker(
 
     Returns
     -------
-    opensim.Marker
-        ``marker``, for chaining.
+    components.Marker
+        ``marker``, wrapped, for chaining.
     """
-    return add_component(model, "marker", marker, reinitialize=reinitialize)
+    marker = _unwrap(marker)
+    add_component(model, "marker", marker, reinitialize=reinitialize)
+    return components.Marker(model, marker)
 
 
 def remove_marker(
@@ -1049,10 +1076,12 @@ def add_constraint(
 
     Returns
     -------
-    opensim.Constraint
-        ``constraint``, for chaining.
+    components.Constraint
+        ``constraint``, wrapped, for chaining.
     """
-    return add_component(model, "constraint", constraint, reinitialize=reinitialize)
+    constraint = _unwrap(constraint)
+    add_component(model, "constraint", constraint, reinitialize=reinitialize)
+    return components.Constraint(model, constraint)
 
 
 def remove_constraint(
@@ -1088,10 +1117,12 @@ def add_controller(
 
     Returns
     -------
-    opensim.Controller
-        ``controller``, for chaining.
+    components.Controller
+        ``controller``, wrapped, for chaining.
     """
-    return add_component(model, "controller", controller, reinitialize=reinitialize)
+    controller = _unwrap(controller)
+    add_component(model, "controller", controller, reinitialize=reinitialize)
+    return components.Controller(model, controller)
 
 
 def remove_controller(
@@ -1128,12 +1159,12 @@ def add_contact_geometry(
 
     Returns
     -------
-    opensim.ContactGeometry
-        ``contact_geometry``, for chaining.
+    components.ContactGeometry
+        ``contact_geometry``, wrapped, for chaining.
     """
-    return add_component(
-        model, "contact_geometry", contact_geometry, reinitialize=reinitialize
-    )
+    contact_geometry = _unwrap(contact_geometry)
+    add_component(model, "contact_geometry", contact_geometry, reinitialize=reinitialize)
+    return components.ContactGeometry(model, contact_geometry)
 
 
 def remove_contact_geometry(
@@ -1167,10 +1198,12 @@ def add_probe(model: "OpenSimModel", probe: Any, *, reinitialize: bool = False) 
 
     Returns
     -------
-    opensim.Probe
-        ``probe``, for chaining.
+    components.Probe
+        ``probe``, wrapped, for chaining.
     """
-    return add_component(model, "probe", probe, reinitialize=reinitialize)
+    probe = _unwrap(probe)
+    add_component(model, "probe", probe, reinitialize=reinitialize)
+    return components.Probe(model, probe)
 
 
 def remove_probe(
@@ -1247,6 +1280,7 @@ def _owner_of_component(thing: Any) -> "OpenSimModel | None":
     to ``None`` rather than raising, so callers can keep trying other
     candidates.
     """
+    thing = _unwrap(thing)
     getter = getattr(thing, "getModel", None)
     if getter is None:
         return None
@@ -1303,6 +1337,7 @@ def _resolve_ground_position(
         If ``thing`` is none of the above, or is a component but ``model``
         is ``None``.
     """
+    thing = _unwrap(thing)
     if isinstance(thing, (tuple, list, np.ndarray)):
         values = tuple(float(value) for value in thing)
         if len(values) != 3:
@@ -1430,8 +1465,7 @@ def _ground_attached_offset_frames(model: "OpenSimModel", verb: str) -> list[Any
     """
     opensim = model.opensim
     root_frames = []
-    for index in range(model.joints.getSize()):
-        joint = model.joints.get(index)
+    for joint in _iter_set(model.model.getJointSet()):
         parent = joint.getParentFrame()
         if opensim.Ground.safeDownCast(parent) is not None:
             raise TypeError(
@@ -1574,6 +1608,8 @@ def rotate_object(
         without exactly 3 values, or ``obj`` is a model with no joint
         attached to ground at all.
     """
+    obj = _unwrap(obj)
+    origin = _unwrap(origin)
     model = _resolve_model(obj, origin)
     pivot = np.array(_resolve_ground_position(origin, model), dtype=float)
     rotation_matrix = _rodrigues_matrix(direction, np.radians(angle_deg))
@@ -1759,6 +1795,7 @@ def translate_object(
     if direction_vector.shape != (3,):
         raise ValueError("direction must have exactly 3 values (dx, dy, dz)")
 
+    obj = _unwrap(obj)
     model = _resolve_model_for(obj)
 
     if isinstance(obj, OpenSimModel):

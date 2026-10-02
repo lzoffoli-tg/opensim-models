@@ -22,7 +22,7 @@ def add_free_body(model, name):
         body = operators.add_body(model, name, mass=2.0, inertia=(1.0, 1.0, 1.0, 0.0, 0.0, 0.0))
         operators.add_joint(
             model,
-            opensim.FreeJoint(f"{name}_to_ground", model.model.getGround(), body),
+            opensim.FreeJoint(f"{name}_to_ground", model.model.getGround(), body.raw),
         )
     return body
 
@@ -57,10 +57,10 @@ def test_add_body_and_joint_as_a_batch():
 
     body = add_free_body(model, "b1")
 
-    assert model.bodies.getSize() == 1
-    assert model.joints.getSize() == 1
-    assert model.body("b1").getMass() == pytest.approx(2.0)
-    assert body.getName() == "b1"
+    assert len(model.bodies) == 1
+    assert len(model.joints) == 1
+    assert model.body("b1").mass == pytest.approx(2.0)
+    assert body.name == "b1"
 
 
 def test_remove_body_and_joint_as_a_batch():
@@ -71,8 +71,8 @@ def test_remove_body_and_joint_as_a_batch():
         operators.remove_joint(model, "b1_to_ground")
         operators.remove_body(model, "b1")
 
-    assert model.bodies.getSize() == 0
-    assert model.joints.getSize() == 0
+    assert len(model.bodies) == 0
+    assert len(model.joints) == 0
 
 
 def test_structural_change_preserves_posture_of_surviving_coordinates():
@@ -80,17 +80,15 @@ def test_structural_change_preserves_posture_of_surviving_coordinates():
     add_free_body(model, "b1")
     add_free_body(model, "b2")
     coordinate_name = next(
-        model.coordinates.get(i).getName()
-        for i in range(model.coordinates.getSize())
-        if model.coordinates.get(i).getName().startswith("b1_to_ground")
+        name for name in model.coordinates if name.startswith("b1_to_ground")
     )
-    model.set_coordinate_degrees(coordinate_name, 30.0)
+    model.coordinate(coordinate_name).set_value_degrees(30.0)
 
     with model.structural_change():
         operators.remove_joint(model, "b2_to_ground")
         operators.remove_body(model, "b2")
 
-    assert model.coordinate_degrees(coordinate_name) == pytest.approx(30.0)
+    assert model.coordinate(coordinate_name).value_degrees == pytest.approx(30.0)
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +99,7 @@ def test_structural_change_preserves_posture_of_surviving_coordinates():
 def _make_muscle(model, body, name="mus1"):
     muscle = opensim.Millard2012EquilibriumMuscle(name, 500.0, 0.1, 0.2, 0.0)
     muscle.addNewPathPoint("p1", model.model.getGround(), opensim.Vec3(0, 0, 0))
-    muscle.addNewPathPoint("p2", body, opensim.Vec3(0, 0, 0))
+    muscle.addNewPathPoint("p2", body.raw, opensim.Vec3(0, 0, 0))
     return muscle
 
 
@@ -110,10 +108,10 @@ def test_add_muscle_and_remove_muscle():
     body = add_free_body(model, "b1")
 
     operators.add_muscle(model, _make_muscle(model, body), reinitialize=True)
-    assert model.muscles.getSize() == 1
+    assert len(model.muscles) == 1
 
     operators.remove_muscle(model, "mus1", reinitialize=True)
-    assert model.muscles.getSize() == 0
+    assert len(model.muscles) == 0
 
 
 def test_add_muscle_is_visible_through_the_force_set():
@@ -135,10 +133,10 @@ def test_add_marker_and_remove_marker():
     marker = opensim.Marker("mk1", model.model.getGround(), opensim.Vec3(0, 0, 0))
 
     operators.add_marker(model, marker, reinitialize=True)
-    assert model.markers.getSize() == 1
+    assert len(model.markers) == 1
 
     operators.remove_marker(model, "mk1", reinitialize=True)
-    assert model.markers.getSize() == 0
+    assert len(model.markers) == 0
 
 
 def test_add_constraint_and_remove_constraint():
@@ -146,14 +144,10 @@ def test_add_constraint_and_remove_constraint():
     add_free_body(model, "b1")
     add_free_body(model, "b2")
     independent = next(
-        model.coordinates.get(i).getName()
-        for i in range(model.coordinates.getSize())
-        if model.coordinates.get(i).getName().startswith("b1_to_ground")
+        name for name in model.coordinates if name.startswith("b1_to_ground")
     )
     dependent = next(
-        model.coordinates.get(i).getName()
-        for i in range(model.coordinates.getSize())
-        if model.coordinates.get(i).getName().startswith("b2_to_ground")
+        name for name in model.coordinates if name.startswith("b2_to_ground")
     )
 
     coupler = opensim.CoordinateCouplerConstraint()
@@ -186,7 +180,7 @@ def test_add_body_attaches_an_existing_mesh_file():
             body = operators.add_body(model, "b1", mass=1.0, mesh_files=mesh_path)
             operators.add_weld_joint(model, "b1_joint", body)
 
-        assert body.getPropertyByName("attached_geometry").size() == 1
+        assert body.raw.getPropertyByName("attached_geometry").size() == 1
         assert Path(tmp_dir) in model.geometry_directories
 
 
@@ -211,9 +205,9 @@ def test_named_joint_constructors_create_the_expected_number_of_coordinates(
     model = make_model()
     with model.structural_change():
         body = operators.add_body(model, "b1", mass=1.0, inertia=(1, 1, 1, 0, 0, 0))
-        adder(model, "b1_joint", body)
+        joint = adder(model, "b1_joint", body)
 
-    assert model.coordinates.getSize() == expected_dof
+    assert len(joint.coordinates) == expected_dof
 
 
 def test_named_joint_constructor_places_the_joint_at_position_and_orientation():
@@ -229,7 +223,7 @@ def test_named_joint_constructor_places_the_joint_at_position_and_orientation():
         )
 
     joint = model.joints.get("b1_joint")
-    parent = opensim.PhysicalOffsetFrame.safeDownCast(joint.getParentFrame())
+    parent = opensim.PhysicalOffsetFrame.safeDownCast(joint.raw.getParentFrame())
     assert tuple(parent.get_translation().to_numpy()) == pytest.approx((1.0, 2.0, 3.0))
     assert parent.get_orientation()[0] == pytest.approx(math.radians(90.0))
 
@@ -255,12 +249,12 @@ def test_add_box_body_computes_mass_and_inertia_analytically():
     )
 
     expected_mass = 0.2 * 0.3 * 0.4 * 1200.0
-    assert body.getMass() == pytest.approx(expected_mass)
-    moments = body.getInertia().getMoments()
+    assert body.mass == pytest.approx(expected_mass)
+    moments = body.raw.getInertia().getMoments()
     assert moments.get(0) == pytest.approx(expected_mass / 12.0 * (0.3**2 + 0.4**2))
     assert moments.get(1) == pytest.approx(expected_mass / 12.0 * (0.2**2 + 0.4**2))
     assert moments.get(2) == pytest.approx(expected_mass / 12.0 * (0.2**2 + 0.3**2))
-    assert opensim.WeldJoint.safeDownCast(joint) is not None
+    assert opensim.WeldJoint.safeDownCast(joint.raw) is not None
 
 
 def test_add_cylinder_body_computes_mass_and_inertia_analytically():
@@ -269,8 +263,8 @@ def test_add_cylinder_body_computes_mass_and_inertia_analytically():
     body, _ = operators.add_cylinder_body(model, "cyl1", 0.05, 0.3, reinitialize=True)
 
     expected_mass = math.pi * 0.05**2 * 0.3 * 1000.0
-    assert body.getMass() == pytest.approx(expected_mass)
-    moments = body.getInertia().getMoments()
+    assert body.mass == pytest.approx(expected_mass)
+    moments = body.raw.getInertia().getMoments()
     assert moments.get(1) == pytest.approx(expected_mass * 0.05**2 / 2.0)
 
 
@@ -280,8 +274,8 @@ def test_add_sphere_body_computes_mass_and_inertia_analytically():
     body, _ = operators.add_sphere_body(model, "sph1", 0.1, reinitialize=True)
 
     expected_mass = 4.0 / 3.0 * math.pi * 0.1**3 * 1000.0
-    assert body.getMass() == pytest.approx(expected_mass)
-    moments = body.getInertia().getMoments()
+    assert body.mass == pytest.approx(expected_mass)
+    moments = body.raw.getInertia().getMoments()
     expected_moment = 2.0 / 5.0 * expected_mass * 0.1**2
     assert moments.get(0) == pytest.approx(expected_moment)
     assert moments.get(1) == pytest.approx(expected_moment)
@@ -300,7 +294,7 @@ def test_primitive_body_is_placed_at_the_given_position_and_orientation():
         reinitialize=True,
     )
 
-    parent = opensim.PhysicalOffsetFrame.safeDownCast(joint.getParentFrame())
+    parent = opensim.PhysicalOffsetFrame.safeDownCast(joint.raw.getParentFrame())
     assert tuple(parent.get_translation().to_numpy()) == pytest.approx((1.0, 2.0, 3.0))
     assert parent.get_orientation()[1] == pytest.approx(math.radians(45.0))
 
@@ -310,7 +304,7 @@ def test_primitive_body_default_joint_type_is_weld():
 
     operators.add_sphere_body(model, "sph1", 0.05, reinitialize=True)
 
-    assert model.coordinates.getSize() == 0
+    assert len(model.coordinates) == 0
 
 
 def test_primitive_body_joint_type_can_be_changed():
@@ -318,7 +312,7 @@ def test_primitive_body_joint_type_can_be_changed():
 
     operators.add_sphere_body(model, "sph1", 0.05, joint_type="free", reinitialize=True)
 
-    assert model.coordinates.getSize() == 6
+    assert len(model.coordinates) == 6
 
 
 def test_primitive_body_rejects_unknown_joint_type():
@@ -327,7 +321,7 @@ def test_primitive_body_rejects_unknown_joint_type():
     with pytest.raises(ValueError, match="Unknown joint_type"):
         operators.add_box_body(model, "box1", (0.1, 0.1, 0.1), joint_type="bogus")
 
-    assert model.bodies.getSize() == 0
+    assert len(model.bodies) == 0
 
 
 def test_primitive_body_mesh_requires_mesh_dir():
@@ -336,7 +330,7 @@ def test_primitive_body_mesh_requires_mesh_dir():
     with pytest.raises(ValueError, match="mesh_dir"):
         operators.add_box_body(model, "box1", (0.1, 0.1, 0.1), mesh=True)
 
-    assert model.bodies.getSize() == 0
+    assert len(model.bodies) == 0
 
 
 def test_primitive_body_can_generate_an_actual_mesh_file():
@@ -347,7 +341,7 @@ def test_primitive_body_can_generate_an_actual_mesh_file():
         )
 
         assert (Path(tmp_dir) / "box1.stl").is_file()
-        assert body.getPropertyByName("attached_geometry").size() == 1
+        assert body.raw.getPropertyByName("attached_geometry").size() == 1
 
 
 def test_primitive_bodies_can_be_batched_together():
@@ -357,8 +351,8 @@ def test_primitive_bodies_can_be_batched_together():
         operators.add_box_body(model, "box1", (0.1, 0.1, 0.1), position=(0.0, 0.0, 0.0))
         operators.add_sphere_body(model, "sph1", 0.05, position=(1.0, 0.0, 0.0))
 
-    assert model.bodies.getSize() == 2
-    assert model.joints.getSize() == 2
+    assert len(model.bodies) == 2
+    assert len(model.joints) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -374,7 +368,7 @@ def test_rotate_object_rotates_a_marker_about_the_origin():
     new_position = operators.rotate_object(marker, (0.0, 0.0, 0.0), (0.0, 0.0, 1.0), 90.0)
 
     assert new_position == pytest.approx((0.0, 1.0, 0.0), abs=1e-9)
-    assert model.marker_location("mk1") == pytest.approx((0.0, 1.0, 0.0), abs=1e-9)
+    assert model.marker("mk1").location == pytest.approx((0.0, 1.0, 0.0), abs=1e-9)
 
 
 def test_rotate_object_rotates_a_physical_offset_frame_translation_and_orientation():
@@ -384,7 +378,7 @@ def test_rotate_object_rotates_a_physical_offset_frame_translation_and_orientati
         operators.add_weld_joint(model, "b1_joint", body, position=(1.0, 0.0, 0.0))
 
     joint = model.joints.get("b1_joint")
-    parent = opensim.PhysicalOffsetFrame.safeDownCast(joint.getParentFrame())
+    parent = opensim.PhysicalOffsetFrame.safeDownCast(joint.raw.getParentFrame())
 
     new_position = operators.rotate_object(parent, (0.0, 0.0, 0.0), (0.0, 0.0, 1.0), 90.0)
 
@@ -402,7 +396,7 @@ def test_rotate_object_pivots_about_an_external_point():
         operators.add_weld_joint(model, "b1_joint", body, position=(1.0, 0.0, 0.0))
 
     joint = model.joints.get("b1_joint")
-    parent = opensim.PhysicalOffsetFrame.safeDownCast(joint.getParentFrame())
+    parent = opensim.PhysicalOffsetFrame.safeDownCast(joint.raw.getParentFrame())
 
     new_position = operators.rotate_object(parent, (2.0, 0.0, 0.0), (0.0, 0.0, 1.0), 180.0)
 
@@ -430,12 +424,12 @@ def test_rotate_object_origin_can_be_another_component():
 def test_rotate_object_on_a_body_is_read_only():
     model = make_model()
     body = add_free_body(model, "b1")
-    original_position = tuple(body.getPositionInGround(model.state).to_numpy())
+    original_position = tuple(body.raw.getPositionInGround(model.state).to_numpy())
 
     new_position = operators.rotate_object(body, (1.0, 0.0, 0.0), (0.0, 0.0, 1.0), 90.0)
 
     assert new_position != pytest.approx(original_position)
-    assert tuple(body.getPositionInGround(model.state).to_numpy()) == pytest.approx(
+    assert tuple(body.raw.getPositionInGround(model.state).to_numpy()) == pytest.approx(
         original_position
     )
 
@@ -467,7 +461,7 @@ def test_rotate_object_rotates_the_whole_model_about_its_root_joint():
     new_position = operators.rotate_object(model, (0.0, 0.0, 0.0), (0.0, 0.0, 1.0), 90.0)
 
     assert new_position == pytest.approx((0.0, 1.0, 0.0), abs=1e-9)
-    assert tuple(body.getPositionInGround(model.state).to_numpy()) == pytest.approx(
+    assert tuple(body.raw.getPositionInGround(model.state).to_numpy()) == pytest.approx(
         (0.0, 1.0, 0.0), abs=1e-9
     )
 
@@ -495,10 +489,10 @@ def test_rotate_object_not_inplace_leaves_the_whole_model_untouched():
     )
 
     assert rotated_copy is not model
-    assert tuple(body.getPositionInGround(model.state).to_numpy()) == pytest.approx(
+    assert tuple(body.raw.getPositionInGround(model.state).to_numpy()) == pytest.approx(
         (1.0, 0.0, 0.0), abs=1e-9
     )
-    copy_body_position = rotated_copy.body("b1").getPositionInGround(rotated_copy.state)
+    copy_body_position = rotated_copy.body("b1").raw.getPositionInGround(rotated_copy.state)
     assert tuple(copy_body_position.to_numpy()) == pytest.approx((0.0, 1.0, 0.0), abs=1e-9)
 
 
@@ -527,7 +521,7 @@ def test_rotate_object_not_inplace_leaves_a_physical_offset_frame_untouched():
         operators.add_weld_joint(model, "b1_joint", body, position=(1.0, 0.0, 0.0))
 
     joint = model.joints.get("b1_joint")
-    parent = opensim.PhysicalOffsetFrame.safeDownCast(joint.getParentFrame())
+    parent = opensim.PhysicalOffsetFrame.safeDownCast(joint.raw.getParentFrame())
 
     rotated_copy = operators.rotate_object(
         parent, (0.0, 0.0, 0.0), (0.0, 0.0, 1.0), 90.0, inplace=False
@@ -545,14 +539,14 @@ def test_rotate_object_not_inplace_leaves_a_physical_offset_frame_untouched():
 def test_rotate_object_not_inplace_on_a_body_still_returns_a_position():
     model = make_model()
     body = add_free_body(model, "b1")
-    original_position = tuple(body.getPositionInGround(model.state).to_numpy())
+    original_position = tuple(body.raw.getPositionInGround(model.state).to_numpy())
 
     new_position = operators.rotate_object(
         body, (1.0, 0.0, 0.0), (0.0, 0.0, 1.0), 90.0, inplace=False
     )
 
     assert new_position != pytest.approx(original_position)
-    assert tuple(body.getPositionInGround(model.state).to_numpy()) == pytest.approx(
+    assert tuple(body.raw.getPositionInGround(model.state).to_numpy()) == pytest.approx(
         original_position
     )
 
@@ -570,7 +564,7 @@ def test_translate_object_translates_a_marker():
     new_position = operators.translate_object(marker, (0.0, 2.0, 3.0))
 
     assert new_position == pytest.approx((1.0, 2.0, 3.0), abs=1e-9)
-    assert model.marker_location("mk1") == pytest.approx((1.0, 2.0, 3.0), abs=1e-9)
+    assert model.marker("mk1").location == pytest.approx((1.0, 2.0, 3.0), abs=1e-9)
 
 
 def test_translate_object_translates_a_physical_offset_frame():
@@ -580,7 +574,7 @@ def test_translate_object_translates_a_physical_offset_frame():
         operators.add_weld_joint(model, "b1_joint", body, position=(1.0, 0.0, 0.0))
 
     joint = model.joints.get("b1_joint")
-    parent = opensim.PhysicalOffsetFrame.safeDownCast(joint.getParentFrame())
+    parent = opensim.PhysicalOffsetFrame.safeDownCast(joint.raw.getParentFrame())
 
     new_position = operators.translate_object(parent, (0.0, 2.0, 0.0))
 
@@ -598,12 +592,12 @@ def test_translate_object_translates_a_physical_offset_frame():
 def test_translate_object_on_a_body_is_read_only():
     model = make_model()
     body = add_free_body(model, "b1")
-    original_position = tuple(body.getPositionInGround(model.state).to_numpy())
+    original_position = tuple(body.raw.getPositionInGround(model.state).to_numpy())
 
     new_position = operators.translate_object(body, (1.0, 0.0, 0.0))
 
     assert new_position != pytest.approx(original_position)
-    assert tuple(body.getPositionInGround(model.state).to_numpy()) == pytest.approx(
+    assert tuple(body.raw.getPositionInGround(model.state).to_numpy()) == pytest.approx(
         original_position
     )
 
@@ -633,7 +627,7 @@ def test_translate_object_translates_the_whole_model_about_its_root_joint():
     new_position = operators.translate_object(model, (0.0, 2.0, 0.0))
 
     assert new_position == pytest.approx((1.0, 2.0, 0.0), abs=1e-9)
-    assert tuple(body.getPositionInGround(model.state).to_numpy()) == pytest.approx(
+    assert tuple(body.raw.getPositionInGround(model.state).to_numpy()) == pytest.approx(
         (1.0, 2.0, 0.0), abs=1e-9
     )
 
@@ -659,10 +653,10 @@ def test_translate_object_not_inplace_leaves_the_whole_model_untouched():
     translated_copy = operators.translate_object(model, (0.0, 2.0, 0.0), inplace=False)
 
     assert translated_copy is not model
-    assert tuple(body.getPositionInGround(model.state).to_numpy()) == pytest.approx(
+    assert tuple(body.raw.getPositionInGround(model.state).to_numpy()) == pytest.approx(
         (1.0, 0.0, 0.0), abs=1e-9
     )
-    copy_body_position = translated_copy.body("b1").getPositionInGround(translated_copy.state)
+    copy_body_position = translated_copy.body("b1").raw.getPositionInGround(translated_copy.state)
     assert tuple(copy_body_position.to_numpy()) == pytest.approx((1.0, 2.0, 0.0), abs=1e-9)
 
 
@@ -689,7 +683,7 @@ def test_translate_object_not_inplace_leaves_a_physical_offset_frame_untouched()
         operators.add_weld_joint(model, "b1_joint", body, position=(1.0, 0.0, 0.0))
 
     joint = model.joints.get("b1_joint")
-    parent = opensim.PhysicalOffsetFrame.safeDownCast(joint.getParentFrame())
+    parent = opensim.PhysicalOffsetFrame.safeDownCast(joint.raw.getParentFrame())
 
     translated_copy = operators.translate_object(parent, (0.0, 2.0, 0.0), inplace=False)
 
@@ -705,11 +699,11 @@ def test_translate_object_not_inplace_leaves_a_physical_offset_frame_untouched()
 def test_translate_object_not_inplace_on_a_body_still_returns_a_position():
     model = make_model()
     body = add_free_body(model, "b1")
-    original_position = tuple(body.getPositionInGround(model.state).to_numpy())
+    original_position = tuple(body.raw.getPositionInGround(model.state).to_numpy())
 
     new_position = operators.translate_object(body, (1.0, 0.0, 0.0), inplace=False)
 
     assert new_position != pytest.approx(original_position)
-    assert tuple(body.getPositionInGround(model.state).to_numpy()) == pytest.approx(
+    assert tuple(body.raw.getPositionInGround(model.state).to_numpy()) == pytest.approx(
         original_position
     )

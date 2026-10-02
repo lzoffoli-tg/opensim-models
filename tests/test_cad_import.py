@@ -77,8 +77,8 @@ def test_from_step_builds_one_body_with_analytic_mass_and_inertia():
 
         model = OpenSimModel.from_step(step_path, density=density)
 
-        assert model.bodies.getSize() == 1
-        body = model.bodies.get(0)
+        assert len(model.bodies) == 1
+        body = model.model.getBodySet().get(0)
         assert body.getMass() == pytest.approx(expected_mass, rel=1e-3)
 
         inertia = body.getInertia().getMoments()
@@ -86,7 +86,7 @@ def test_from_step_builds_one_body_with_analytic_mass_and_inertia():
         assert inertia.get(1) == pytest.approx(expected_iyy, rel=1e-2)
         assert inertia.get(2) == pytest.approx(expected_izz, rel=1e-2)
 
-        assert model.joints.getSize() == 1
+        assert len(model.joints) == 1
         mesh_files = list(model.geometry_directories[0].glob("*.stl"))
         assert len(mesh_files) == 1
 
@@ -98,8 +98,8 @@ def test_from_step_without_free_joints_adds_unconnected_bodies():
 
         model = OpenSimModel.from_step(step_path, add_free_joints=False)
 
-        assert model.bodies.getSize() == 1
-        assert model.joints.getSize() == 0
+        assert len(model.bodies) == 1
+        assert len(model.joints) == 0
 
 
 def test_from_step_as_one_object_defaults_to_a_single_combined_body():
@@ -112,9 +112,9 @@ def test_from_step_as_one_object_defaults_to_a_single_combined_body():
 
         model = OpenSimModel.from_step(step_path, density=density)
 
-        assert model.bodies.getSize() == 1
-        assert model.joints.getSize() == 1
-        body = model.bodies.get(0)
+        assert len(model.bodies) == 1
+        assert len(model.joints) == 1
+        body = model.model.getBodySet().get(0)
         assert body.getMass() == pytest.approx(2 * mass_each, rel=1e-6)
 
         # Combined mass centre: both boxes' own centres, weighted by mass.
@@ -137,8 +137,8 @@ def test_from_step_as_one_object_false_keeps_one_body_per_solid():
 
         model = OpenSimModel.from_step(step_path, as_one_object=False)
 
-        assert model.bodies.getSize() == 2
-        assert model.joints.getSize() == 2
+        assert len(model.bodies) == 2
+        assert len(model.joints) == 2
 
 
 def test_from_step_missing_file_raises():

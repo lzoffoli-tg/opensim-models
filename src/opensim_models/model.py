@@ -194,7 +194,6 @@ class OpenSimModel:
         self._geometry_dirs: list[Path] = []
         self._anchor_names: set[str] = set()
         self._merged: dict[int, list[tuple[str, str]]] = {}
-        self._source_models: tuple["OpenSimModel", ...] = ()
         self._visualizer: Any | None = None
         self._player: Any | None = None
         self._player_window: Any | None = None
@@ -225,7 +224,6 @@ class OpenSimModel:
         clone._geometry_dirs = list(self._geometry_dirs)
         clone._anchor_names = set(self._anchor_names)
         clone._merged = dict(self._merged)
-        clone._source_models = self._source_models
         clone._visualizer = None
         clone._player = None
         clone._player_window = None
@@ -422,226 +420,164 @@ class OpenSimModel:
             coordinates.get(index).set_locked(False)
 
     @property
-    def bodies(self) -> Any:
-        """Return the model's OpenSim body set."""
-        return self.model.getBodySet()
+    def bodies(self) -> dict[str, "components.Body"]:
+        """Return every body in the model, keyed by name."""
+        from . import components
+
+        return {
+            item.getName(): components.Body(self, item)
+            for item in _iter_set(self.model.getBodySet())
+        }
 
     @property
-    def joints(self) -> Any:
-        """Return the model's OpenSim joint set."""
-        return self.model.getJointSet()
+    def joints(self) -> dict[str, "components.Joint"]:
+        """Return every joint in the model, keyed by name."""
+        from . import components
+
+        return {
+            item.getName(): components.Joint(self, item)
+            for item in _iter_set(self.model.getJointSet())
+        }
 
     @property
-    def muscles(self) -> Any:
-        """Return the model's OpenSim muscle set."""
-        return self.model.getMuscles()
+    def muscles(self) -> dict[str, "components.Muscle"]:
+        """Return every muscle in the model, keyed by name."""
+        from . import components
+
+        return {
+            item.getName(): components.Muscle(self, item)
+            for item in _iter_set(self.model.getMuscles())
+        }
 
     @property
-    def markers(self) -> Any:
-        """Return the model's OpenSim marker set."""
-        return self.model.getMarkerSet()
+    def markers(self) -> dict[str, "components.Marker"]:
+        """Return every marker in the model, keyed by name."""
+        from . import components
+
+        return {
+            item.getName(): components.Marker(self, item)
+            for item in _iter_set(self.model.getMarkerSet())
+        }
 
     @property
-    def coordinates(self) -> Any:
-        """Return the model's OpenSim coordinate set."""
-        return self.model.getCoordinateSet()
+    def coordinates(self) -> dict[str, "components.Coordinate"]:
+        """Return every coordinate in the model, keyed by name."""
+        from . import components
 
-    def body(self, name: str) -> Any:
-        """Return a body by its OpenSim name.
+        return {
+            item.getName(): components.Coordinate(self, item)
+            for item in _iter_set(self.model.getCoordinateSet())
+        }
+
+    @property
+    def forces(self) -> dict[str, "components.Force"]:
+        """Return every force in the model (including muscles), keyed by name."""
+        from . import components
+
+        return {
+            item.getName(): components.Force(self, item)
+            for item in _iter_set(self.model.getForceSet())
+        }
+
+    @property
+    def constraints(self) -> dict[str, "components.Constraint"]:
+        """Return every constraint in the model, keyed by name."""
+        from . import components
+
+        return {
+            item.getName(): components.Constraint(self, item)
+            for item in _iter_set(self.model.getConstraintSet())
+        }
+
+    @property
+    def controllers(self) -> dict[str, "components.Controller"]:
+        """Return every controller in the model, keyed by name."""
+        from . import components
+
+        return {
+            item.getName(): components.Controller(self, item)
+            for item in _iter_set(self.model.getControllerSet())
+        }
+
+    @property
+    def contact_geometries(self) -> dict[str, "components.ContactGeometry"]:
+        """Return every contact geometry in the model, keyed by name."""
+        from . import components
+
+        return {
+            item.getName(): components.ContactGeometry(self, item)
+            for item in _iter_set(self.model.getContactGeometrySet())
+        }
+
+    @property
+    def probes(self) -> dict[str, "components.Probe"]:
+        """Return every probe in the model, keyed by name."""
+        from . import components
+
+        return {
+            item.getName(): components.Probe(self, item)
+            for item in _iter_set(self.model.getProbeSet())
+        }
+
+    def body(self, name: str) -> "components.Body":
+        """Return a body by its OpenSim name, wrapped as a :class:`~opensim_models.components.Body`.
 
         Parameters
         ----------
         name : str
             OpenSim body name.
-
-        Returns
-        -------
-        opensim.Body
-            Matching body object.
         """
-        return self.bodies.get(name)
+        from . import components
 
-    def set_body_mass(self, name: str, kilograms: float) -> None:
-        """Set a body's mass and rebuild the system so the change takes effect.
+        return components.Body(self, self.model.getBodySet().get(name))
 
-        A body's mass feeds into the multibody system's mass matrix, which
-        OpenSim builds once in ``initSystem()``: changing the property alone
-        would have no effect on dynamics until the system is rebuilt, so
-        this calls :meth:`reinitialize` afterward, preserving the current
-        posture and velocities.
-
-        Parameters
-        ----------
-        name : str
-            OpenSim body name.
-        kilograms : float
-            New mass, in kilograms. Must be strictly positive.
-
-        Raises
-        ------
-        ValueError
-            If ``kilograms`` is not finite or not strictly positive.
-        """
-        self.body(name).setMass(self._positive(kilograms))
-        self.reinitialize()
-
-    def body_mass(self, name: str) -> float:
-        """Return a body's mass, in kilograms.
-
-        Parameters
-        ----------
-        name : str
-            OpenSim body name.
-        """
-        return float(self.body(name).getMass())
-
-    def joint(self, name: str) -> Any:
-        """Return a joint by its OpenSim name.
+    def joint(self, name: str) -> "components.Joint":
+        """Return a joint by its OpenSim name, wrapped as a :class:`~opensim_models.components.Joint`.
 
         Parameters
         ----------
         name : str
             OpenSim joint name.
-
-        Returns
-        -------
-        opensim.Joint
-            Matching joint object.
         """
-        return self.joints.get(name)
+        from . import components
 
-    def muscle(self, name: str) -> Any:
-        """Return a muscle by its OpenSim name.
+        return components.Joint(self, self.model.getJointSet().get(name))
+
+    def muscle(self, name: str) -> "components.Muscle":
+        """Return a muscle by its OpenSim name, wrapped as a :class:`~opensim_models.components.Muscle`.
 
         Parameters
         ----------
         name : str
             OpenSim muscle name.
-
-        Returns
-        -------
-        opensim.Muscle
-            Matching muscle object.
         """
-        return self.muscles.get(name)
+        from . import components
 
-    def marker(self, name: str) -> Any:
-        """Return a marker by its OpenSim name.
+        return components.Muscle(self, self.model.getMuscles().get(name))
+
+    def marker(self, name: str) -> "components.Marker":
+        """Return a marker by its OpenSim name, wrapped as a :class:`~opensim_models.components.Marker`.
 
         Parameters
         ----------
         name : str
             OpenSim marker name.
-
-        Returns
-        -------
-        opensim.Marker
-            Matching marker object.
         """
-        return self.markers.get(name)
+        from . import components
 
-    def coordinate(self, name: str) -> Any:
-        """Return a coordinate by its OpenSim name.
+        return components.Marker(self, self.model.getMarkerSet().get(name))
+
+    def coordinate(self, name: str) -> "components.Coordinate":
+        """Return a coordinate by its OpenSim name, wrapped as a :class:`~opensim_models.components.Coordinate`.
 
         Parameters
         ----------
         name : str
             OpenSim coordinate name.
-
-        Returns
-        -------
-        opensim.Coordinate
-            Matching coordinate object.
         """
-        return self.coordinates.get(name)
+        from . import components
 
-    def set_coordinate_degrees(self, name: str, degrees: float) -> None:
-        """Set a coordinate value in degrees.
-
-        This only writes the raw value into :attr:`state`; it does not
-        propagate it to anything derived (body positions, muscle lengths,
-        forces, ...). Call :meth:`update_state` before reading any derived
-        quantity, or after a batch of several ``set_*``/direct ``state``
-        edits, to bring the whole state up to date in one pass.
-
-        Parameters
-        ----------
-        name : str
-            OpenSim coordinate name.
-        degrees : float
-            New coordinate value in degrees.
-
-        Raises
-        ------
-        ValueError
-            If ``degrees`` is not finite.
-        """
-        if not np.isfinite(degrees):
-            raise ValueError("degrees must be finite")
-        coordinate = self.coordinate(name)
-        if coordinate.get_locked():
-            raise ValueError(f"OpenSim coordinate {name!r} is locked")
-        coordinate.setValue(self.state, float(np.deg2rad(degrees)), False)
-
-    def coordinate_degrees(self, name: str) -> float:
-        """Read a coordinate value converted from radians to degrees.
-
-        Parameters
-        ----------
-        name : str
-            OpenSim coordinate name.
-
-        Returns
-        -------
-        float
-            Current coordinate value in degrees.
-        """
-        coordinate = self.coordinate(name)
-        return float(np.rad2deg(coordinate.getValue(self.state)))
-
-    def set_coordinate_speed_degrees(self, name: str, degrees_per_second: float) -> None:
-        """Set a coordinate's speed (angular velocity) in degrees per second.
-
-        This only writes the raw value into :attr:`state`; it does not
-        propagate it to anything derived. Call :meth:`update_state` before
-        reading any derived quantity, or after a batch of several
-        ``set_*``/direct ``state`` edits, to bring the whole state up to
-        date in one pass.
-
-        Parameters
-        ----------
-        name : str
-            OpenSim coordinate name.
-        degrees_per_second : float
-            New coordinate speed in degrees per second.
-
-        Raises
-        ------
-        ValueError
-            If ``degrees_per_second`` is not finite.
-        """
-        if not np.isfinite(degrees_per_second):
-            raise ValueError("degrees_per_second must be finite")
-        coordinate = self.coordinate(name)
-        if coordinate.get_locked():
-            raise ValueError(f"OpenSim coordinate {name!r} is locked")
-        coordinate.setSpeedValue(self.state, float(np.deg2rad(degrees_per_second)))
-
-    def coordinate_speed_degrees(self, name: str) -> float:
-        """Read a coordinate's speed converted from radians/s to degrees/s.
-
-        Parameters
-        ----------
-        name : str
-            OpenSim coordinate name.
-
-        Returns
-        -------
-        float
-            Current coordinate speed in degrees per second.
-        """
-        coordinate = self.coordinate(name)
-        return float(np.rad2deg(coordinate.getSpeedValue(self.state)))
+        return components.Coordinate(self, self.model.getCoordinateSet().get(name))
 
     def update_state(self) -> None:
         """Propagate every raw value set on :attr:`state` to derived quantities.
@@ -675,174 +611,9 @@ class OpenSimModel:
         """
         self.model.realizePosition(self.state)
         self.model.realizeVelocity(self.state)
-        if self.muscles.getSize() > 0:
+        if len(self.muscles) > 0:
             self.model.equilibrateMuscles(self.state)
         self.model.realizeDynamics(self.state)
-
-    def set_coordinate_locked(self, name: str, locked: bool) -> None:
-        """Lock or unlock a coordinate.
-
-        Parameters
-        ----------
-        name : str
-            OpenSim coordinate name.
-        locked : bool
-            Whether the coordinate should reject new values.
-        """
-        self.coordinate(name).set_locked(bool(locked))
-
-    def coordinate_locked(self, name: str) -> bool:
-        """Return whether a coordinate is currently locked.
-
-        Parameters
-        ----------
-        name : str
-            OpenSim coordinate name.
-        """
-        return bool(self.coordinate(name).get_locked())
-
-    def set_coordinate_range(
-        self, name: str, min_degrees: float, max_degrees: float
-    ) -> None:
-        """Set the allowed range of motion of a coordinate, in degrees.
-
-        Parameters
-        ----------
-        name : str
-            OpenSim coordinate name.
-        min_degrees : float
-            Lower bound of the range, in degrees.
-        max_degrees : float
-            Upper bound of the range, in degrees.
-
-        Raises
-        ------
-        ValueError
-            If a bound is not finite or ``min_degrees >= max_degrees``.
-        """
-        if not (np.isfinite(min_degrees) and np.isfinite(max_degrees)):
-            raise ValueError("range bounds must be finite")
-        if min_degrees >= max_degrees:
-            raise ValueError("min_degrees must be less than max_degrees")
-        coordinate = self.coordinate(name)
-        coordinate.setRangeMin(float(np.deg2rad(min_degrees)))
-        coordinate.setRangeMax(float(np.deg2rad(max_degrees)))
-
-    def coordinate_range(self, name: str) -> tuple[float, float]:
-        """Return the allowed range of motion of a coordinate, in degrees.
-
-        Parameters
-        ----------
-        name : str
-            OpenSim coordinate name.
-        """
-        coordinate = self.coordinate(name)
-        return (
-            float(np.rad2deg(coordinate.getRangeMin())),
-            float(np.rad2deg(coordinate.getRangeMax())),
-        )
-
-    def set_marker_location(self, name: str, x: float, y: float, z: float) -> None:
-        """Set a marker's offset within its parent frame, in metres.
-
-        Parameters
-        ----------
-        name : str
-            OpenSim marker name.
-        x, y, z : float
-            Offset coordinates in metres.
-
-        Raises
-        ------
-        ValueError
-            If a coordinate is not finite.
-        """
-        if not all(np.isfinite(value) for value in (x, y, z)):
-            raise ValueError("location must be finite")
-        self.marker(name).set_location(self.opensim.Vec3(float(x), float(y), float(z)))
-
-    def marker_location(self, name: str) -> tuple[float, float, float]:
-        """Return a marker's offset within its parent frame, in metres.
-
-        Parameters
-        ----------
-        name : str
-            OpenSim marker name.
-        """
-        location = self.marker(name).get_location()
-        return (location.get(0), location.get(1), location.get(2))
-
-    def set_muscle_max_isometric_force(self, name: str, newtons: float) -> None:
-        """Set a muscle's maximum isometric force, in newtons.
-
-        Parameters
-        ----------
-        name : str
-            OpenSim muscle name.
-        newtons : float
-            New maximum isometric force. Must be strictly positive.
-        """
-        self.muscle(name).setMaxIsometricForce(self._positive(newtons))
-
-    def muscle_max_isometric_force(self, name: str) -> float:
-        """Return a muscle's maximum isometric force, in newtons."""
-        return float(self.muscle(name).getMaxIsometricForce())
-
-    def set_muscle_optimal_fiber_length(self, name: str, meters: float) -> None:
-        """Set a muscle's optimal fiber length, in metres.
-
-        Parameters
-        ----------
-        name : str
-            OpenSim muscle name.
-        meters : float
-            New optimal fiber length. Must be strictly positive.
-        """
-        self.muscle(name).setOptimalFiberLength(self._positive(meters))
-
-    def muscle_optimal_fiber_length(self, name: str) -> float:
-        """Return a muscle's optimal fiber length, in metres."""
-        return float(self.muscle(name).getOptimalFiberLength())
-
-    def set_muscle_tendon_slack_length(self, name: str, meters: float) -> None:
-        """Set a muscle's tendon slack length, in metres.
-
-        Parameters
-        ----------
-        name : str
-            OpenSim muscle name.
-        meters : float
-            New tendon slack length. Must be strictly positive.
-        """
-        self.muscle(name).setTendonSlackLength(self._positive(meters))
-
-    def muscle_tendon_slack_length(self, name: str) -> float:
-        """Return a muscle's tendon slack length, in metres."""
-        return float(self.muscle(name).getTendonSlackLength())
-
-    def set_muscle_pennation_angle(self, name: str, degrees: float) -> None:
-        """Set a muscle's pennation angle at optimal fiber length, in degrees.
-
-        Parameters
-        ----------
-        name : str
-            OpenSim muscle name.
-        degrees : float
-            New pennation angle. Must be finite and within ``[0, 90)``.
-        """
-        if not np.isfinite(degrees) or not (0.0 <= degrees < 90.0):
-            raise ValueError(
-                "pennation angle must be a finite value in [0, 90) degrees"
-            )
-        self.muscle(name).setPennationAngleAtOptimalFiberLength(
-            float(np.deg2rad(degrees))
-        )
-
-    def muscle_pennation_angle(self, name: str) -> float:
-        """Return a muscle's pennation angle at optimal fiber length, in degrees."""
-        return float(
-            np.rad2deg(self.muscle(name).getPennationAngleAtOptimalFiberLength())
-        )
 
     @staticmethod
     def _positive(value: float) -> float:
@@ -864,7 +635,7 @@ class OpenSimModel:
         defaults through the constraint's function, since OpenSim does not
         do this automatically when a default value is set directly.
         """
-        coordinates = self.coordinates
+        coordinates = self.model.getCoordinateSet()
         for index in range(coordinates.getSize()):
             coordinate = coordinates.get(index)
             coordinate.setDefaultValue(coordinate.getValue(self.state))
@@ -1025,9 +796,10 @@ class OpenSimModel:
         ValueError
             If a scale factor is non-finite or not strictly positive.
         """
+        body_set = self.model.getBodySet()
         scale_set = self.opensim.ScaleSet()
         for body_name, axes in factors.items():
-            if not self.bodies.contains(body_name):
+            if not body_set.contains(body_name):
                 continue
             if any(not np.isfinite(value) or value <= 0 for value in axes):
                 raise ValueError(f"Invalid scale factor for body {body_name!r}: {axes}")
@@ -1070,7 +842,6 @@ class OpenSimModel:
         pathlib.Path
             Path to the written file.
         """
-        self._resync_from_sources()
         self._sync_coordinate_defaults()
         destination = Path(model_path)
         self.model.printToXML(str(destination))
@@ -1079,7 +850,7 @@ class OpenSimModel:
 
     def _referenced_mesh_filenames(self) -> set[str]:
         filenames: set[str] = set()
-        for body in _iter_set(self.bodies):
+        for body in _iter_set(self.model.getBodySet()):
             geometry_property = body.getPropertyByName("attached_geometry")
             for index in range(geometry_property.size()):
                 mesh = self.opensim.Mesh.safeDownCast(body.get_attached_geometry(index))
@@ -1171,11 +942,12 @@ class OpenSimModel:
         process with no mouse-position, camera-transform, or picking API
         exposed to Python at all.
 
-        If this model was built by combining others (``full = user +
-        screen``), its components are freshly resynced from each one's
-        *current* state first -- see :attr:`models` -- so a change made to
-        ``user``/``screen`` since the combination (or since the last
-        ``show()``) always shows up here.
+        To show several containers together, combine them into an
+        :class:`~opensim_models.ensemble.OpenSimEnsemble` first (``user +
+        screen``) and call ``show()`` on *that* -- it rebuilds a merged
+        model from each container's current state on every call, so a
+        change made to ``user``/``screen`` since the combination always
+        shows up. A plain ``OpenSimModel`` only ever shows itself.
 
         Parameters
         ----------
@@ -1207,7 +979,6 @@ class OpenSimModel:
         ValueError
             If ``motion`` resolves to fewer than 2 rows.
         """
-        self._resync_from_sources()
         if geometry_path is not None:
             self.add_geometry_directory(geometry_path)
 
@@ -1216,12 +987,17 @@ class OpenSimModel:
         self._restore_coordinate_values(coordinates)
 
         if self._player_window is not None:
+            # also closes self._visualizer, on the background thread that
+            # owns it: start_player's own tick() loop does this, once it
+            # notices PlayerWindow.close()'s stop signal -- calling
+            # self._visualizer.close() directly here instead, from this
+            # (the caller's) thread, was tried and rejected, confirmed
+            # directly to hang forever inside vtkRenderWindow.Finalize()
+            # (see _player.py's tick() for the full explanation).
             self._player_window.close()
             self._player_window = None
             self._player = None
-        if self._visualizer is not None:
-            self._visualizer.close()
-            self._visualizer = None
+        self._visualizer = None
 
         from ._player import start_player
 
@@ -1258,40 +1034,6 @@ class OpenSimModel:
             if not coordinate.get_locked():
                 coordinate.setValue(self.state, value, False)
         self.model.realizePosition(self.state)
-
-    @property
-    def models(self) -> tuple["OpenSimModel", ...]:
-        """Return the models combined (via ``+``) into this one, in combination order.
-
-        ``(self,)`` if this model was not built by combining others (every
-        model has a non-empty ``models``, itself included, rather than an
-        empty tuple meaning "no sources"). A later change to one of these
-        -- ``user.rotate(...)``, ``screen.set_angle_deg(...)``, etc. -- is
-        reflected here automatically next time this model is shown
-        (:meth:`show`) or exported (:meth:`export`): both resync this
-        model's components from :attr:`models`'s *current* state first.
-        """
-        return self._source_models or (self,)
-
-    def _resync_from_sources(self) -> None:
-        """Rebuild this model's components from :attr:`models`'s current state.
-
-        A no-op if this model was not built by combining others (see
-        :attr:`models`). Reuses :meth:`add_model`'s own merge semantics
-        (automatic renaming on collision, shared ground), applied fresh
-        each time rather than once at ``+`` time, which is what lets a
-        later change to a source model show up here.
-        """
-        if not self._source_models:
-            return
-        self.model = self.opensim.Model()
-        self._unlock_coordinates()
-        self.state = self.model.initSystem()
-        self._geometry_dirs = []
-        self._anchor_names = set()
-        self._merged = {}
-        for source in self._source_models:
-            self.add_model(source)
 
     def add_model(self, other: "OpenSimModel", *, name: str | None = None) -> None:
         """Merge another model's components into this one, in place.
@@ -1454,40 +1196,328 @@ class OpenSimModel:
         self.model.finalizeConnections()
         self.state = self.model.initSystem()
 
-    def __add__(self, other: "OpenSimModel") -> "OpenSimModel":
-        """Return a new model containing the components of both operands.
+    def add_body(
+        self,
+        name: str,
+        mass: float,
+        *,
+        mass_center: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        inertia: tuple[float, float, float, float, float, float] = (0.0,) * 6,
+        mesh_files: str | Path | list[str | Path] | None = None,
+        reinitialize: bool = False,
+    ) -> "components.Body":
+        """Construct an ``opensim.Body`` and add it to this model.
 
-        Neither operand is modified; see :meth:`add_model` for the merge
-        semantics (automatic renaming on collision, shared ground).
-        :attr:`models` on the result is ``self.models + other.models``
-        (flattened, so chaining ``a + b + c`` gives ``(a, b, c)`` rather
-        than nesting), and a later change to any of them is reflected the
-        next time the result is shown or exported -- see :attr:`models`.
+        A thin wrapper equivalent to ``operators.add_body(self, name, mass,
+        ...)``: see :func:`~opensim_models.operators.add_body` for the full
+        semantics (imported locally to avoid a circular import, since
+        :mod:`opensim_models.operators` itself imports from this module).
+        """
+        from . import operators
+
+        return operators.add_body(
+            self,
+            name,
+            mass,
+            mass_center=mass_center,
+            inertia=inertia,
+            mesh_files=mesh_files,
+            reinitialize=reinitialize,
+        )
+
+    def add_free_joint(
+        self,
+        name: str,
+        child_body: Any,
+        *,
+        parent_frame: Any = None,
+        position: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        orientation_deg: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        child_position: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        child_orientation_deg: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        reinitialize: bool = False,
+    ) -> "components.Joint":
+        """Construct an ``opensim.FreeJoint`` (6 dof) and add it to this model.
+
+        A thin wrapper equivalent to ``operators.add_free_joint(self, name,
+        child_body, ...)``: see :func:`~opensim_models.operators.add_free_joint`
+        for the full semantics (imported locally, see :meth:`add_body`).
+        """
+        from . import operators
+
+        return operators.add_free_joint(
+            self,
+            name,
+            child_body,
+            parent_frame=parent_frame,
+            position=position,
+            orientation_deg=orientation_deg,
+            child_position=child_position,
+            child_orientation_deg=child_orientation_deg,
+            reinitialize=reinitialize,
+        )
+
+    def add_pin_joint(
+        self,
+        name: str,
+        child_body: Any,
+        *,
+        parent_frame: Any = None,
+        position: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        orientation_deg: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        child_position: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        child_orientation_deg: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        reinitialize: bool = False,
+    ) -> "components.Joint":
+        """Construct an ``opensim.PinJoint`` (1 rotational dof) and add it to this model.
+
+        A thin wrapper equivalent to ``operators.add_pin_joint(self, name,
+        child_body, ...)``: see :func:`~opensim_models.operators.add_pin_joint`
+        for the full semantics (imported locally, see :meth:`add_body`).
+        """
+        from . import operators
+
+        return operators.add_pin_joint(
+            self,
+            name,
+            child_body,
+            parent_frame=parent_frame,
+            position=position,
+            orientation_deg=orientation_deg,
+            child_position=child_position,
+            child_orientation_deg=child_orientation_deg,
+            reinitialize=reinitialize,
+        )
+
+    def add_ball_joint(
+        self,
+        name: str,
+        child_body: Any,
+        *,
+        parent_frame: Any = None,
+        position: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        orientation_deg: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        child_position: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        child_orientation_deg: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        reinitialize: bool = False,
+    ) -> "components.Joint":
+        """Construct an ``opensim.BallJoint`` (3 rotational dof) and add it to this model.
+
+        A thin wrapper equivalent to ``operators.add_ball_joint(self, name,
+        child_body, ...)``: see :func:`~opensim_models.operators.add_ball_joint`
+        for the full semantics (imported locally, see :meth:`add_body`).
+        """
+        from . import operators
+
+        return operators.add_ball_joint(
+            self,
+            name,
+            child_body,
+            parent_frame=parent_frame,
+            position=position,
+            orientation_deg=orientation_deg,
+            child_position=child_position,
+            child_orientation_deg=child_orientation_deg,
+            reinitialize=reinitialize,
+        )
+
+    def add_slider_joint(
+        self,
+        name: str,
+        child_body: Any,
+        *,
+        parent_frame: Any = None,
+        position: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        orientation_deg: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        child_position: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        child_orientation_deg: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        reinitialize: bool = False,
+    ) -> "components.Joint":
+        """Construct an ``opensim.SliderJoint`` (1 translational dof) and add it to this model.
+
+        A thin wrapper equivalent to ``operators.add_slider_joint(self,
+        name, child_body, ...)``: see
+        :func:`~opensim_models.operators.add_slider_joint` for the full
+        semantics (imported locally, see :meth:`add_body`).
+        """
+        from . import operators
+
+        return operators.add_slider_joint(
+            self,
+            name,
+            child_body,
+            parent_frame=parent_frame,
+            position=position,
+            orientation_deg=orientation_deg,
+            child_position=child_position,
+            child_orientation_deg=child_orientation_deg,
+            reinitialize=reinitialize,
+        )
+
+    def add_weld_joint(
+        self,
+        name: str,
+        child_body: Any,
+        *,
+        parent_frame: Any = None,
+        position: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        orientation_deg: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        child_position: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        child_orientation_deg: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        reinitialize: bool = False,
+    ) -> "components.Joint":
+        """Construct an ``opensim.WeldJoint`` (0 dof) and add it to this model.
+
+        A thin wrapper equivalent to ``operators.add_weld_joint(self, name,
+        child_body, ...)``: see :func:`~opensim_models.operators.add_weld_joint`
+        for the full semantics (imported locally, see :meth:`add_body`).
+        """
+        from . import operators
+
+        return operators.add_weld_joint(
+            self,
+            name,
+            child_body,
+            parent_frame=parent_frame,
+            position=position,
+            orientation_deg=orientation_deg,
+            child_position=child_position,
+            child_orientation_deg=child_orientation_deg,
+            reinitialize=reinitialize,
+        )
+
+    def add_force(self, force: Any, *, reinitialize: bool = False) -> "components.Force":
+        """Add an already-constructed force/actuator to this model.
+
+        A thin wrapper equivalent to ``operators.add_force(self, force,
+        ...)``: see :func:`~opensim_models.operators.add_force` for the
+        full semantics (imported locally, see :meth:`add_body`).
+        """
+        from . import operators
+
+        return operators.add_force(self, force, reinitialize=reinitialize)
+
+    def add_muscle(self, muscle: Any, *, reinitialize: bool = False) -> "components.Muscle":
+        """Add an already-constructed muscle to this model.
+
+        A thin wrapper equivalent to ``operators.add_muscle(self, muscle,
+        ...)``: see :func:`~opensim_models.operators.add_muscle` for the
+        full semantics (imported locally, see :meth:`add_body`).
+        """
+        from . import operators
+
+        return operators.add_muscle(self, muscle, reinitialize=reinitialize)
+
+    def add_marker(self, marker: Any, *, reinitialize: bool = False) -> "components.Marker":
+        """Add an already-constructed marker to this model.
+
+        A thin wrapper equivalent to ``operators.add_marker(self, marker,
+        ...)``: see :func:`~opensim_models.operators.add_marker` for the
+        full semantics (imported locally, see :meth:`add_body`).
+        """
+        from . import operators
+
+        return operators.add_marker(self, marker, reinitialize=reinitialize)
+
+    def add_constraint(
+        self, constraint: Any, *, reinitialize: bool = False
+    ) -> "components.Constraint":
+        """Add an already-constructed constraint to this model.
+
+        A thin wrapper equivalent to ``operators.add_constraint(self,
+        constraint, ...)``: see
+        :func:`~opensim_models.operators.add_constraint` for the full
+        semantics (imported locally, see :meth:`add_body`).
+        """
+        from . import operators
+
+        return operators.add_constraint(self, constraint, reinitialize=reinitialize)
+
+    def add_controller(
+        self, controller: Any, *, reinitialize: bool = False
+    ) -> "components.Controller":
+        """Add an already-constructed controller to this model.
+
+        A thin wrapper equivalent to ``operators.add_controller(self,
+        controller, ...)``: see
+        :func:`~opensim_models.operators.add_controller` for the full
+        semantics (imported locally, see :meth:`add_body`).
+        """
+        from . import operators
+
+        return operators.add_controller(self, controller, reinitialize=reinitialize)
+
+    def add_contact_geometry(
+        self, contact_geometry: Any, *, reinitialize: bool = False
+    ) -> "components.ContactGeometry":
+        """Add already-constructed contact geometry to this model.
+
+        A thin wrapper equivalent to ``operators.add_contact_geometry(self,
+        contact_geometry, ...)``: see
+        :func:`~opensim_models.operators.add_contact_geometry` for the full
+        semantics (imported locally, see :meth:`add_body`).
+        """
+        from . import operators
+
+        return operators.add_contact_geometry(
+            self, contact_geometry, reinitialize=reinitialize
+        )
+
+    def add_probe(self, probe: Any, *, reinitialize: bool = False) -> "components.Probe":
+        """Add an already-constructed probe to this model.
+
+        A thin wrapper equivalent to ``operators.add_probe(self, probe,
+        ...)``: see :func:`~opensim_models.operators.add_probe` for the
+        full semantics (imported locally, see :meth:`add_body`).
+        """
+        from . import operators
+
+        return operators.add_probe(self, probe, reinitialize=reinitialize)
+
+    def __add__(self, other: "OpenSimModel | OpenSimEnsemble") -> "OpenSimEnsemble":
+        """Return an assembly (:class:`~opensim_models.ensemble.OpenSimEnsemble`)
+        containing both operands as separate containers.
+
+        Neither operand is modified, and neither is merged into a new
+        container -- ``self``/``other`` stay independently editable;
+        :meth:`~opensim_models.ensemble.OpenSimEnsemble.show`/``.export()``
+        build a merged model from their *current* state on demand instead.
+        For a permanent, in-place fuse of two containers into one, use
+        :meth:`add_model` directly. Chaining (``a + b + c``, where any
+        operand may already be an ``OpenSimEnsemble``) flattens into one
+        assembly rather than nesting.
 
         Raises
         ------
         TypeError
-            If ``other`` is not an ``OpenSimModel``.
+            If ``other`` is neither an ``OpenSimModel`` nor an
+            ``OpenSimEnsemble``.
         """
+        from .ensemble import OpenSimEnsemble
+
+        if isinstance(other, OpenSimEnsemble):
+            return OpenSimEnsemble((self,) + other.containers)
         if not isinstance(other, OpenSimModel):
             raise TypeError(
-                f"other must be an OpenSimModel, got {type(other).__name__!r}"
+                f"other must be an OpenSimModel or OpenSimEnsemble, got {type(other).__name__!r}"
             )
-        combined = OpenSimModel(model_path=None)
-        combined._source_models = self.models + other.models
-        combined._resync_from_sources()
-        return combined
+        return OpenSimEnsemble((self, other))
 
-    def __radd__(self, other: "OpenSimModel") -> "OpenSimModel":
+    def __radd__(self, other: "OpenSimModel | OpenSimEnsemble") -> "OpenSimEnsemble":
         """Support ``other + self`` when ``other`` did not implement ``__add__``.
 
         Raises
         ------
         TypeError
-            If ``other`` is not an ``OpenSimModel``.
+            If ``other`` is neither an ``OpenSimModel`` nor an
+            ``OpenSimEnsemble``.
         """
+        from .ensemble import OpenSimEnsemble
+
+        if isinstance(other, OpenSimEnsemble):
+            return OpenSimEnsemble(other.containers + (self,))
         if not isinstance(other, OpenSimModel):
             raise TypeError(
-                f"other must be an OpenSimModel, got {type(other).__name__!r}"
+                f"other must be an OpenSimModel or OpenSimEnsemble, got {type(other).__name__!r}"
             )
-        return other.__add__(self)
+        return OpenSimEnsemble((other, self))

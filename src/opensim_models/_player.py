@@ -121,8 +121,8 @@ class MotionData:
             values = np.asarray(table.getDependentColumn(name).to_numpy(), dtype=float)
             if (
                 in_degrees
-                and model.coordinates.contains(name)
-                and model.coordinate(name).getMotionType() == _ROTATIONAL_MOTION_TYPE
+                and name in model.coordinates
+                and model.coordinate(name).raw.getMotionType() == _ROTATIONAL_MOTION_TYPE
             ):
                 values = np.radians(values)
             columns[name] = values
@@ -347,12 +347,12 @@ if _IS_WINDOWS:
 
 def _apply_time(model: "OpenSimModel", data: MotionData, time: float) -> None:
     for name, value in data.values_at(time).items():
-        if not model.coordinates.contains(name):
+        if name not in model.coordinates:
             continue
         coordinate = model.coordinate(name)
-        if coordinate.get_locked():
+        if coordinate.locked:
             continue
-        coordinate.setValue(model.state, value, False)
+        coordinate.set_value(value, enforce_constraints=False)
     model.model.realizePosition(model.state)
     model.visualizer.show(model.state)
 
@@ -367,9 +367,15 @@ class PlayerWindow:
         the window was opened without one (controls shown disabled).
     """
 
-    def __init__(self, motion_player: MotionPlayer | None, stop_event: threading.Event) -> None:
+    def __init__(
+        self,
+        motion_player: MotionPlayer | None,
+        stop_event: threading.Event,
+        closed_event: threading.Event,
+    ) -> None:
         self.motion_player = motion_player
         self._stop_event = stop_event
+        self._closed_event = closed_event
 
     def close(self) -> None:
         """Close the window and stop its background thread.
@@ -377,9 +383,36 @@ class PlayerWindow:
         Safe to call from any thread; idempotent. The window closes on
         its own next tick (at most one frame interval later), since
         Tk widgets may only safely be touched from the thread running
-        their own ``mainloop``.
+        their own ``mainloop``. Does not wait for that to actually happen
+        -- see :meth:`wait_closed` for callers that need to.
         """
         self._stop_event.set()
+
+    def wait_closed(self, timeout: float | None = None) -> bool:
+        """Block until the window has actually finished closing.
+
+        Needed before reusing/mutating whatever ``OpenSimModel`` this
+        window's visualizer was showing: :meth:`close` only *signals* the
+        background thread to stop, so code right after it that goes on to
+        mutate ``model.model``/``model.state`` can otherwise race that
+        thread's last tick, still reading them, before it notices the
+        signal (confirmed directly: :class:`~opensim_models.ensemble.OpenSimEnsemble`
+        rebuilding its combined model's components immediately after
+        ``close()`` -- instead of after this -- left the process unable to
+        exit afterward).
+
+        Parameters
+        ----------
+        timeout : float or None, optional
+            Maximum time to wait, in seconds. ``None`` (default) waits
+            indefinitely.
+
+        Returns
+        -------
+        bool
+            ``True`` if the window closed before ``timeout`` elapsed.
+        """
+        return self._closed_event.wait(timeout)
 
 
 def start_player(
@@ -457,6 +490,7 @@ def start_player(
         player = MotionPlayer(data.start_time, data.end_time, loop=loop)
 
     stop_event = threading.Event()
+    closed_event = threading.Event()
     ready = threading.Event()
     failure: dict[str, Exception] = {}
 
@@ -602,6 +636,13 @@ def start_player(
             ready.set()
             root.destroy()
             return
+        # captured here, by this specific run()/thread, rather than read
+        # back from `model.visualizer` inside tick() below: a later show()
+        # call reassigns `model._visualizer` to a *different* instance as
+        # soon as it starts (on the caller's thread, concurrently with
+        # this thread's own teardown), so reading it late could close the
+        # wrong (new) visualizer instead of this thread's own (old) one.
+        visualizer = model._visualizer
 
         root.update_idletasks()
         root.geometry(f"{default_width}x{default_height + controls_frame.winfo_reqheight()}")
@@ -623,13 +664,23 @@ def start_player(
 
         def tick() -> None:
             if stop_event.is_set():
+                # closing the *visualizer* here too (not just destroying
+                # `root`), on this thread rather than the caller's: closing
+                # it from a model.show() call running on a different
+                # thread -- even just this one call later, after this
+                # thread's already-scheduled tick() fires -- was tried and
+                # rejected, confirmed directly to hang forever inside
+                # vtkRenderWindow.Finalize(), the same class of cross-
+                # thread Win32 hazard documented throughout this module.
+                visualizer.close()
                 root.destroy()
+                closed_event.set()
                 return
             nonlocal last_tick
             now = _time.monotonic()
             dt = now - last_tick
             last_tick = now
-            model.visualizer.process_events()
+            visualizer.process_events()
             if player is not None:
                 if player.playing:
                     player.advance(dt)
@@ -658,4 +709,4 @@ def start_player(
             "installed (pip install vtk) and that a graphical backend "
             "is available."
         ) from failure["error"]
-    return PlayerWindow(player, stop_event)
+    return PlayerWindow(player, stop_event, closed_event)

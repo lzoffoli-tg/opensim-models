@@ -142,7 +142,7 @@ class Box(OpenSimModel):
         never a stale cached value.
         """
         self.model.realizePosition(self.state)
-        position = self.body(_BODY_NAME).getPositionInGround(self.state)
+        position = self.body(_BODY_NAME).raw.getPositionInGround(self.state)
         return (position.get(0), position.get(1), position.get(2))
 
     def set_origin(self, origin: tuple[float, float, float]) -> None:
@@ -165,7 +165,7 @@ class Box(OpenSimModel):
         a stale cached value.
         """
         self.model.realizePosition(self.state)
-        rotation = self.body(_BODY_NAME).getRotationInGround(self.state)
+        rotation = self.body(_BODY_NAME).raw.getRotationInGround(self.state)
         euler = rotation.convertRotationToBodyFixedXYZ()
         return tuple(float(np.degrees(euler.get(i))) for i in range(3))
 
@@ -203,7 +203,7 @@ class Box(OpenSimModel):
         :attr:`angle_deg`, always up to date.
         """
         self.model.realizePosition(self.state)
-        body = self.body(_BODY_NAME)
+        body = self.body(_BODY_NAME).raw
         position = np.asarray(body.getPositionInGround(self.state).to_numpy())
         rotation_matrix = body.getRotationInGround(self.state).asMat33()
         rotation = np.array(

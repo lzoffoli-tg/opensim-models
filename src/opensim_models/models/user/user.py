@@ -158,7 +158,7 @@ class User(OpenSimModel):
 
     def _joint_center(self, joint_name: str) -> tuple[float, float, float]:
         self.model.realizePosition(self.state)
-        frame = self.joint(joint_name).getChildFrame()
+        frame = self.joint(joint_name).raw.getChildFrame()
         position = frame.getPositionInGround(self.state)
         return (position.get(0), position.get(1), position.get(2))
 
@@ -283,7 +283,7 @@ class User(OpenSimModel):
 
     def _marker_location(self, marker_name: str) -> tuple[float, float, float]:
         self.model.realizePosition(self.state)
-        position = self.marker(marker_name).getLocationInGround(self.state)
+        position = self.marker(marker_name).raw.getLocationInGround(self.state)
         return (position.get(0), position.get(1), position.get(2))
 
     @property
@@ -380,7 +380,7 @@ class User(OpenSimModel):
         targets = (x, y, z)
         for name, target, current in zip(_PELVIS_TRANSLATION_COORDINATES, targets, reference):
             coordinate = self.coordinate(name)
-            coordinate.setValue(self.state, coordinate.getValue(self.state) + (target - current), False)
+            coordinate.set_value(coordinate.value + (target - current), enforce_constraints=False)
         self.update_state()
 
     @property
@@ -659,7 +659,7 @@ class User(OpenSimModel):
         expanded: dict[str, tuple[float, float, float]] = {}
         for body, values in factors.items():
             for candidate in (body, f"{body}_r", f"{body}_l"):
-                if self.bodies.contains(candidate):
+                if candidate in self.bodies:
                     expanded[candidate] = values
         return expanded
 
@@ -671,7 +671,7 @@ class User(OpenSimModel):
         degrees : float
             Angle in degrees.
         """
-        self.set_coordinate_degrees("hip_flexion_l", degrees)
+        self.coordinate("hip_flexion_l").set_value_degrees(degrees)
 
     def set_right_hip_flexionextension(self, degrees: float):
         """Set right hip flexion/extension coordinate in degrees.
@@ -681,7 +681,7 @@ class User(OpenSimModel):
         degrees : float
             Angle in degrees.
         """
-        self.set_coordinate_degrees("hip_flexion_r", degrees)
+        self.coordinate("hip_flexion_r").set_value_degrees(degrees)
 
     def set_left_hip_adduction(self, degrees: float):
         """Set left hip adduction/abduction coordinate in degrees.
@@ -691,7 +691,7 @@ class User(OpenSimModel):
         degrees : float
             Angle in degrees.
         """
-        self.set_coordinate_degrees("hip_adduction_l", degrees)
+        self.coordinate("hip_adduction_l").set_value_degrees(degrees)
 
     def set_right_hip_adduction(self, degrees: float):
         """Set right hip adduction/abduction coordinate in degrees.
@@ -701,7 +701,7 @@ class User(OpenSimModel):
         degrees : float
             Angle in degrees.
         """
-        self.set_coordinate_degrees("hip_adduction_r", degrees)
+        self.coordinate("hip_adduction_r").set_value_degrees(degrees)
 
     def set_left_hip_rotation(self, degrees: float):
         """Set left hip rotation coordinate in degrees.
@@ -711,7 +711,7 @@ class User(OpenSimModel):
         degrees : float
             Angle in degrees.
         """
-        self.set_coordinate_degrees("hip_rotation_l", degrees)
+        self.coordinate("hip_rotation_l").set_value_degrees(degrees)
 
     def set_right_hip_rotation(self, degrees: float):
         """Set right hip rotation coordinate in degrees.
@@ -721,7 +721,7 @@ class User(OpenSimModel):
         degrees : float
             Angle in degrees.
         """
-        self.set_coordinate_degrees("hip_rotation_r", degrees)
+        self.coordinate("hip_rotation_r").set_value_degrees(degrees)
 
     def set_left_knee_flexionextension(self, degrees: float):
         """Set left knee flexion/extension coordinate in degrees.
@@ -731,7 +731,7 @@ class User(OpenSimModel):
         degrees : float
             Angle in degrees.
         """
-        self.set_coordinate_degrees("knee_angle_l", degrees)
+        self.coordinate("knee_angle_l").set_value_degrees(degrees)
 
     def set_right_knee_flexionextension(self, degrees: float):
         """Set right knee flexion/extension coordinate in degrees.
@@ -741,7 +741,7 @@ class User(OpenSimModel):
         degrees : float
             Angle in degrees.
         """
-        self.set_coordinate_degrees("knee_angle_r", degrees)
+        self.coordinate("knee_angle_r").set_value_degrees(degrees)
 
     def set_left_ankle_flexiondorsiflexion(self, degrees: float):
         """Set left ankle flexion/dorsiflexion coordinate in degrees.
@@ -751,7 +751,7 @@ class User(OpenSimModel):
         degrees : float
             Angle in degrees.
         """
-        self.set_coordinate_degrees("ankle_angle_l", degrees)
+        self.coordinate("ankle_angle_l").set_value_degrees(degrees)
 
     def set_right_ankle_flexiondorsiflexion(self, degrees: float):
         """Set right ankle flexion/dorsiflexion coordinate in degrees.
@@ -761,7 +761,7 @@ class User(OpenSimModel):
         degrees : float
             Angle in degrees.
         """
-        self.set_coordinate_degrees("ankle_angle_r", degrees)
+        self.coordinate("ankle_angle_r").set_value_degrees(degrees)
 
     def set_left_subtalar_inversion(self, degrees: float):
         """Set left subtalar inversion coordinate in degrees.
@@ -776,7 +776,7 @@ class User(OpenSimModel):
         ValueError
             The supplied model locks subtalar coordinates.
         """
-        self.set_coordinate_degrees("subtalar_angle_l", degrees)
+        self.coordinate("subtalar_angle_l").set_value_degrees(degrees)
 
     def set_right_subtalar_inversion(self, degrees: float):
         """Set right subtalar inversion coordinate in degrees.
@@ -791,7 +791,7 @@ class User(OpenSimModel):
         ValueError
             The supplied model locks subtalar coordinates.
         """
-        self.set_coordinate_degrees("subtalar_angle_r", degrees)
+        self.coordinate("subtalar_angle_r").set_value_degrees(degrees)
 
     def set_left_mtp_flexion(self, degrees: float):
         """Set left metatarsophalangeal flexion coordinate in degrees.
@@ -806,7 +806,7 @@ class User(OpenSimModel):
         ValueError
             The supplied model locks metatarsophalangeal coordinates.
         """
-        self.set_coordinate_degrees("mtp_angle_l", degrees)
+        self.coordinate("mtp_angle_l").set_value_degrees(degrees)
 
     def set_right_mtp_flexion(self, degrees: float):
         """Set right metatarsophalangeal flexion coordinate in degrees.
@@ -821,7 +821,7 @@ class User(OpenSimModel):
         ValueError
             The supplied model locks metatarsophalangeal coordinates.
         """
-        self.set_coordinate_degrees("mtp_angle_r", degrees)
+        self.coordinate("mtp_angle_r").set_value_degrees(degrees)
 
     def set_left_shoulder_flexion(self, degrees: float):
         """Set left shoulder flexion coordinate in degrees.
@@ -831,7 +831,7 @@ class User(OpenSimModel):
         degrees : float
             Angle in degrees.
         """
-        self.set_coordinate_degrees("arm_flex_l", degrees)
+        self.coordinate("arm_flex_l").set_value_degrees(degrees)
 
     def set_right_shoulder_flexion(self, degrees: float):
         """Set right shoulder flexion coordinate in degrees.
@@ -841,7 +841,7 @@ class User(OpenSimModel):
         degrees : float
             Angle in degrees.
         """
-        self.set_coordinate_degrees("arm_flex_r", degrees)
+        self.coordinate("arm_flex_r").set_value_degrees(degrees)
 
     def set_left_shoulder_adduction(self, degrees: float):
         """Set left shoulder adduction coordinate in degrees.
@@ -851,7 +851,7 @@ class User(OpenSimModel):
         degrees : float
             Angle in degrees.
         """
-        self.set_coordinate_degrees("arm_add_l", degrees)
+        self.coordinate("arm_add_l").set_value_degrees(degrees)
 
     def set_right_shoulder_adduction(self, degrees: float):
         """Set right shoulder adduction coordinate in degrees.
@@ -861,7 +861,7 @@ class User(OpenSimModel):
         degrees : float
             Angle in degrees.
         """
-        self.set_coordinate_degrees("arm_add_r", degrees)
+        self.coordinate("arm_add_r").set_value_degrees(degrees)
 
     def set_left_shoulder_rotation(self, degrees: float):
         """Set left shoulder rotation coordinate in degrees.
@@ -871,7 +871,7 @@ class User(OpenSimModel):
         degrees : float
             Angle in degrees.
         """
-        self.set_coordinate_degrees("arm_rot_l", degrees)
+        self.coordinate("arm_rot_l").set_value_degrees(degrees)
 
     def set_right_shoulder_rotation(self, degrees: float):
         """Set right shoulder rotation coordinate in degrees.
@@ -881,7 +881,7 @@ class User(OpenSimModel):
         degrees : float
             Angle in degrees.
         """
-        self.set_coordinate_degrees("arm_rot_r", degrees)
+        self.coordinate("arm_rot_r").set_value_degrees(degrees)
 
     def set_left_elbow_flexion(self, degrees: float):
         """Set left elbow flexion coordinate in degrees.
@@ -891,7 +891,7 @@ class User(OpenSimModel):
         degrees : float
             Angle in degrees.
         """
-        self.set_coordinate_degrees("elbow_flex_l", degrees)
+        self.coordinate("elbow_flex_l").set_value_degrees(degrees)
 
     def set_right_elbow_flexion(self, degrees: float):
         """Set right elbow flexion coordinate in degrees.
@@ -901,7 +901,7 @@ class User(OpenSimModel):
         degrees : float
             Angle in degrees.
         """
-        self.set_coordinate_degrees("elbow_flex_r", degrees)
+        self.coordinate("elbow_flex_r").set_value_degrees(degrees)
 
     def set_left_wrist_flexion(self, degrees: float):
         """Set left wrist flexion coordinate in degrees.
@@ -911,7 +911,7 @@ class User(OpenSimModel):
         degrees : float
             Angle in degrees.
         """
-        self.set_coordinate_degrees("wrist_flex_l", degrees)
+        self.coordinate("wrist_flex_l").set_value_degrees(degrees)
 
     def set_right_wrist_flexion(self, degrees: float):
         """Set right wrist flexion coordinate in degrees.
@@ -921,7 +921,7 @@ class User(OpenSimModel):
         degrees : float
             Angle in degrees.
         """
-        self.set_coordinate_degrees("wrist_flex_r", degrees)
+        self.coordinate("wrist_flex_r").set_value_degrees(degrees)
 
     def set_left_wrist_deviation(self, degrees: float):
         """Set left wrist deviation coordinate in degrees.
@@ -931,7 +931,7 @@ class User(OpenSimModel):
         degrees : float
             Angle in degrees.
         """
-        self.set_coordinate_degrees("wrist_dev_l", degrees)
+        self.coordinate("wrist_dev_l").set_value_degrees(degrees)
 
     def set_right_wrist_deviation(self, degrees: float):
         """Set right wrist deviation coordinate in degrees.
@@ -941,7 +941,7 @@ class User(OpenSimModel):
         degrees : float
             Angle in degrees.
         """
-        self.set_coordinate_degrees("wrist_dev_r", degrees)
+        self.coordinate("wrist_dev_r").set_value_degrees(degrees)
 
     def set_left_forearm_pronation(self, degrees: float):
         """Set left forearm pronation/supination coordinate in degrees.
@@ -951,7 +951,7 @@ class User(OpenSimModel):
         degrees : float
             Angle in degrees.
         """
-        self.set_coordinate_degrees("pro_sup_l", degrees)
+        self.coordinate("pro_sup_l").set_value_degrees(degrees)
 
     def set_right_forearm_pronation(self, degrees: float):
         """Set right forearm pronation/supination coordinate in degrees.
@@ -961,7 +961,7 @@ class User(OpenSimModel):
         degrees : float
             Angle in degrees.
         """
-        self.set_coordinate_degrees("pro_sup_r", degrees)
+        self.coordinate("pro_sup_r").set_value_degrees(degrees)
 
     def set_lumbar_extension(self, degrees: float):
         """Set lumbar extension coordinate in degrees.
@@ -971,7 +971,7 @@ class User(OpenSimModel):
         degrees : float
             Angle in degrees.
         """
-        self.set_coordinate_degrees("lumbar_extension", degrees)
+        self.coordinate("lumbar_extension").set_value_degrees(degrees)
 
     def set_lumbar_bending(self, degrees: float):
         """Set lumbar lateral bending coordinate in degrees.
@@ -981,7 +981,7 @@ class User(OpenSimModel):
         degrees : float
             Angle in degrees.
         """
-        self.set_coordinate_degrees("lumbar_bending", degrees)
+        self.coordinate("lumbar_bending").set_value_degrees(degrees)
 
     def set_lumbar_rotation(self, degrees: float):
         """Set lumbar rotation coordinate in degrees.
@@ -991,7 +991,7 @@ class User(OpenSimModel):
         degrees : float
             Angle in degrees.
         """
-        self.set_coordinate_degrees("lumbar_rotation", degrees)
+        self.coordinate("lumbar_rotation").set_value_degrees(degrees)
 
     @property
     def left_hip_flexionextension(self) -> float:
@@ -999,7 +999,7 @@ class User(OpenSimModel):
 
         Read-only counterpart of ``set_left_hip_flexionextension``.
         """
-        return self.coordinate_degrees("hip_flexion_l")
+        return self.coordinate("hip_flexion_l").value_degrees
 
     @property
     def right_hip_flexionextension(self) -> float:
@@ -1007,7 +1007,7 @@ class User(OpenSimModel):
 
         Read-only counterpart of ``set_right_hip_flexionextension``.
         """
-        return self.coordinate_degrees("hip_flexion_r")
+        return self.coordinate("hip_flexion_r").value_degrees
 
     @property
     def left_hip_adduction(self) -> float:
@@ -1015,7 +1015,7 @@ class User(OpenSimModel):
 
         Read-only counterpart of ``set_left_hip_adduction``.
         """
-        return self.coordinate_degrees("hip_adduction_l")
+        return self.coordinate("hip_adduction_l").value_degrees
 
     @property
     def right_hip_adduction(self) -> float:
@@ -1023,7 +1023,7 @@ class User(OpenSimModel):
 
         Read-only counterpart of ``set_right_hip_adduction``.
         """
-        return self.coordinate_degrees("hip_adduction_r")
+        return self.coordinate("hip_adduction_r").value_degrees
 
     @property
     def left_hip_rotation(self) -> float:
@@ -1031,7 +1031,7 @@ class User(OpenSimModel):
 
         Read-only counterpart of ``set_left_hip_rotation``.
         """
-        return self.coordinate_degrees("hip_rotation_l")
+        return self.coordinate("hip_rotation_l").value_degrees
 
     @property
     def right_hip_rotation(self) -> float:
@@ -1039,7 +1039,7 @@ class User(OpenSimModel):
 
         Read-only counterpart of ``set_right_hip_rotation``.
         """
-        return self.coordinate_degrees("hip_rotation_r")
+        return self.coordinate("hip_rotation_r").value_degrees
 
     @property
     def left_knee_flexionextension(self) -> float:
@@ -1047,7 +1047,7 @@ class User(OpenSimModel):
 
         Read-only counterpart of ``set_left_knee_flexionextension``.
         """
-        return self.coordinate_degrees("knee_angle_l")
+        return self.coordinate("knee_angle_l").value_degrees
 
     @property
     def right_knee_flexionextension(self) -> float:
@@ -1055,7 +1055,7 @@ class User(OpenSimModel):
 
         Read-only counterpart of ``set_right_knee_flexionextension``.
         """
-        return self.coordinate_degrees("knee_angle_r")
+        return self.coordinate("knee_angle_r").value_degrees
 
     @property
     def left_ankle_flexiondorsiflexion(self) -> float:
@@ -1063,7 +1063,7 @@ class User(OpenSimModel):
 
         Read-only counterpart of ``set_left_ankle_flexiondorsiflexion``.
         """
-        return self.coordinate_degrees("ankle_angle_l")
+        return self.coordinate("ankle_angle_l").value_degrees
 
     @property
     def right_ankle_flexiondorsiflexion(self) -> float:
@@ -1071,7 +1071,7 @@ class User(OpenSimModel):
 
         Read-only counterpart of ``set_right_ankle_flexiondorsiflexion``.
         """
-        return self.coordinate_degrees("ankle_angle_r")
+        return self.coordinate("ankle_angle_r").value_degrees
 
     @property
     def left_subtalar_inversion(self) -> float:
@@ -1079,7 +1079,7 @@ class User(OpenSimModel):
 
         Read-only counterpart of ``set_left_subtalar_inversion``.
         """
-        return self.coordinate_degrees("subtalar_angle_l")
+        return self.coordinate("subtalar_angle_l").value_degrees
 
     @property
     def right_subtalar_inversion(self) -> float:
@@ -1087,7 +1087,7 @@ class User(OpenSimModel):
 
         Read-only counterpart of ``set_right_subtalar_inversion``.
         """
-        return self.coordinate_degrees("subtalar_angle_r")
+        return self.coordinate("subtalar_angle_r").value_degrees
 
     @property
     def left_mtp_flexion(self) -> float:
@@ -1095,7 +1095,7 @@ class User(OpenSimModel):
 
         Read-only counterpart of ``set_left_mtp_flexion``.
         """
-        return self.coordinate_degrees("mtp_angle_l")
+        return self.coordinate("mtp_angle_l").value_degrees
 
     @property
     def right_mtp_flexion(self) -> float:
@@ -1103,7 +1103,7 @@ class User(OpenSimModel):
 
         Read-only counterpart of ``set_right_mtp_flexion``.
         """
-        return self.coordinate_degrees("mtp_angle_r")
+        return self.coordinate("mtp_angle_r").value_degrees
 
     @property
     def left_shoulder_flexion(self) -> float:
@@ -1111,7 +1111,7 @@ class User(OpenSimModel):
 
         Read-only counterpart of ``set_left_shoulder_flexion``.
         """
-        return self.coordinate_degrees("arm_flex_l")
+        return self.coordinate("arm_flex_l").value_degrees
 
     @property
     def right_shoulder_flexion(self) -> float:
@@ -1119,7 +1119,7 @@ class User(OpenSimModel):
 
         Read-only counterpart of ``set_right_shoulder_flexion``.
         """
-        return self.coordinate_degrees("arm_flex_r")
+        return self.coordinate("arm_flex_r").value_degrees
 
     @property
     def left_shoulder_adduction(self) -> float:
@@ -1127,7 +1127,7 @@ class User(OpenSimModel):
 
         Read-only counterpart of ``set_left_shoulder_adduction``.
         """
-        return self.coordinate_degrees("arm_add_l")
+        return self.coordinate("arm_add_l").value_degrees
 
     @property
     def right_shoulder_adduction(self) -> float:
@@ -1135,7 +1135,7 @@ class User(OpenSimModel):
 
         Read-only counterpart of ``set_right_shoulder_adduction``.
         """
-        return self.coordinate_degrees("arm_add_r")
+        return self.coordinate("arm_add_r").value_degrees
 
     @property
     def left_shoulder_rotation(self) -> float:
@@ -1143,7 +1143,7 @@ class User(OpenSimModel):
 
         Read-only counterpart of ``set_left_shoulder_rotation``.
         """
-        return self.coordinate_degrees("arm_rot_l")
+        return self.coordinate("arm_rot_l").value_degrees
 
     @property
     def right_shoulder_rotation(self) -> float:
@@ -1151,7 +1151,7 @@ class User(OpenSimModel):
 
         Read-only counterpart of ``set_right_shoulder_rotation``.
         """
-        return self.coordinate_degrees("arm_rot_r")
+        return self.coordinate("arm_rot_r").value_degrees
 
     @property
     def left_elbow_flexion(self) -> float:
@@ -1159,7 +1159,7 @@ class User(OpenSimModel):
 
         Read-only counterpart of ``set_left_elbow_flexion``.
         """
-        return self.coordinate_degrees("elbow_flex_l")
+        return self.coordinate("elbow_flex_l").value_degrees
 
     @property
     def right_elbow_flexion(self) -> float:
@@ -1167,7 +1167,7 @@ class User(OpenSimModel):
 
         Read-only counterpart of ``set_right_elbow_flexion``.
         """
-        return self.coordinate_degrees("elbow_flex_r")
+        return self.coordinate("elbow_flex_r").value_degrees
 
     @property
     def left_wrist_flexion(self) -> float:
@@ -1175,7 +1175,7 @@ class User(OpenSimModel):
 
         Read-only counterpart of ``set_left_wrist_flexion``.
         """
-        return self.coordinate_degrees("wrist_flex_l")
+        return self.coordinate("wrist_flex_l").value_degrees
 
     @property
     def right_wrist_flexion(self) -> float:
@@ -1183,7 +1183,7 @@ class User(OpenSimModel):
 
         Read-only counterpart of ``set_right_wrist_flexion``.
         """
-        return self.coordinate_degrees("wrist_flex_r")
+        return self.coordinate("wrist_flex_r").value_degrees
 
     @property
     def left_wrist_deviation(self) -> float:
@@ -1191,7 +1191,7 @@ class User(OpenSimModel):
 
         Read-only counterpart of ``set_left_wrist_deviation``.
         """
-        return self.coordinate_degrees("wrist_dev_l")
+        return self.coordinate("wrist_dev_l").value_degrees
 
     @property
     def right_wrist_deviation(self) -> float:
@@ -1199,7 +1199,7 @@ class User(OpenSimModel):
 
         Read-only counterpart of ``set_right_wrist_deviation``.
         """
-        return self.coordinate_degrees("wrist_dev_r")
+        return self.coordinate("wrist_dev_r").value_degrees
 
     @property
     def left_forearm_pronation(self) -> float:
@@ -1207,7 +1207,7 @@ class User(OpenSimModel):
 
         Read-only counterpart of ``set_left_forearm_pronation``.
         """
-        return self.coordinate_degrees("pro_sup_l")
+        return self.coordinate("pro_sup_l").value_degrees
 
     @property
     def right_forearm_pronation(self) -> float:
@@ -1215,7 +1215,7 @@ class User(OpenSimModel):
 
         Read-only counterpart of ``set_right_forearm_pronation``.
         """
-        return self.coordinate_degrees("pro_sup_r")
+        return self.coordinate("pro_sup_r").value_degrees
 
     @property
     def lumbar_extension(self) -> float:
@@ -1223,7 +1223,7 @@ class User(OpenSimModel):
 
         Read-only counterpart of ``set_lumbar_extension``.
         """
-        return self.coordinate_degrees("lumbar_extension")
+        return self.coordinate("lumbar_extension").value_degrees
 
     @property
     def lumbar_bending(self) -> float:
@@ -1231,7 +1231,7 @@ class User(OpenSimModel):
 
         Read-only counterpart of ``set_lumbar_bending``.
         """
-        return self.coordinate_degrees("lumbar_bending")
+        return self.coordinate("lumbar_bending").value_degrees
 
     @property
     def lumbar_rotation(self) -> float:
@@ -1239,4 +1239,4 @@ class User(OpenSimModel):
 
         Read-only counterpart of ``set_lumbar_rotation``.
         """
-        return self.coordinate_degrees("lumbar_rotation")
+        return self.coordinate("lumbar_rotation").value_degrees
