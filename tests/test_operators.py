@@ -7,7 +7,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from opensim_models import OpenSimModel, operators
+from opensim_models import Box, OpenSimModel, operators
 
 opensim = pytest.importorskip("opensim")
 
@@ -92,22 +92,82 @@ def test_structural_change_preserves_posture_of_surviving_coordinates():
 
 
 # ---------------------------------------------------------------------------
-# Forces and muscles
+# attach_component
 # ---------------------------------------------------------------------------
 
 
-def _make_muscle(model, body, name="mus1"):
-    muscle = opensim.Millard2012EquilibriumMuscle(name, 500.0, 0.1, 0.2, 0.0)
-    muscle.addNewPathPoint("p1", model.model.getGround(), opensim.Vec3(0, 0, 0))
-    muscle.addNewPathPoint("p2", body.raw, opensim.Vec3(0, 0, 0))
-    return muscle
+def test_attach_component_reattaches_to_a_new_parent_at_com():
+    model = make_model()
+    parent = add_free_body(model, "parent")
+    child = add_free_body(model, "child")
+
+    joint = operators.attach_component(
+        model, child.raw, to=parent.raw, reinitialize=True,
+    )
+
+    assert joint.name == "child_to_parent"
+    assert len(model.joints) == 2
+    assert "child_to_ground" not in model.joints
+    assert "parent" in joint.raw.getParentFrame().getName()
+
+
+def test_attach_component_resolves_explicit_points():
+    model = make_model()
+    parent = add_free_body(model, "parent")
+    child = add_free_body(model, "child")
+
+    operators.attach_component(
+        model, child.raw, to=parent.raw,
+        child_point=(0.0, 0.0, 0.0), parent_point=(0.0, 0.5, 0.0),
+        reinitialize=True,
+    )
+
+    model.model.realizePosition(model.state)
+    position = child.raw.getPositionInGround(model.state)
+    assert (position.get(0), position.get(1), position.get(2)) == pytest.approx((0.0, 0.5, 0.0))
+
+
+def test_attach_component_supports_a_standalone_component_once_merged():
+    model = make_model()
+    parent = add_free_body(model, "parent")
+    box = Box(0.1, 0.1, 0.1, origin=(9.0, 9.0, 9.0))
+
+    merged = model + box
+    merged_parent = merged.body("parent")
+    merged_box = merged.body("box")
+
+    merged.attach_component(merged_box, to=merged_parent, reinitialize=True)
+
+    merged.model.realizePosition(merged.state)
+    box_position = merged_box.raw.getPositionInGround(merged.state)
+    parent_position = merged_parent.raw.getPositionInGround(merged.state)
+    assert (box_position.get(0), box_position.get(1), box_position.get(2)) == pytest.approx(
+        (parent_position.get(0), parent_position.get(1), parent_position.get(2))
+    )
+
+
+def test_attach_component_rejects_a_component_not_yet_in_the_model():
+    model = make_model()
+    parent = add_free_body(model, "parent")
+    lone_box = Box(0.1, 0.1, 0.1)
+
+    with pytest.raises(ValueError, match="not connected by any joint"):
+        operators.attach_component(model, lone_box.raw, to=parent.raw)
+
+
+# ---------------------------------------------------------------------------
+# Forces and muscles
+# ---------------------------------------------------------------------------
 
 
 def test_add_muscle_and_remove_muscle():
     model = make_model()
     body = add_free_body(model, "b1")
 
-    operators.add_muscle(model, _make_muscle(model, body), reinitialize=True)
+    operators.add_muscle(
+        model, "mus1", model.model.getGround(), (0, 0, 0), body.raw, (0, 0, 0),
+        max_isometric_force=500.0, reinitialize=True,
+    )
     assert len(model.muscles) == 1
 
     operators.remove_muscle(model, "mus1", reinitialize=True)
@@ -118,9 +178,25 @@ def test_add_muscle_is_visible_through_the_force_set():
     model = make_model()
     body = add_free_body(model, "b1")
 
-    operators.add_muscle(model, _make_muscle(model, body), reinitialize=True)
+    operators.add_muscle(
+        model, "mus1", model.model.getGround(), (0, 0, 0), body.raw, (0, 0, 0),
+        max_isometric_force=500.0, reinitialize=True,
+    )
 
     assert model.model.getForceSet().getIndex("mus1") >= 0
+
+
+def test_add_muscle_with_via_points_creates_a_longer_path():
+    model = make_model()
+    body = add_free_body(model, "b1")
+
+    muscle = operators.add_muscle(
+        model, "mus1", model.model.getGround(), (0, 0, 0), body.raw, (0, 0, 0),
+        max_isometric_force=500.0, via_points=[(model.model.getGround(), (0.05, 0, 0))],
+        reinitialize=True,
+    )
+
+    assert muscle.raw.getGeometryPath().getCurrentPath(model.state).getSize() == 3
 
 
 # ---------------------------------------------------------------------------
@@ -139,7 +215,7 @@ def test_add_marker_and_remove_marker():
     assert len(model.markers) == 0
 
 
-def test_add_constraint_and_remove_constraint():
+def test_add_coordinate_coupler_constraint_and_remove_constraint():
     model = make_model()
     add_free_body(model, "b1")
     add_free_body(model, "b2")
@@ -150,17 +226,42 @@ def test_add_constraint_and_remove_constraint():
         name for name in model.coordinates if name.startswith("b2_to_ground")
     )
 
-    coupler = opensim.CoordinateCouplerConstraint()
-    coupler.setName("coupler1")
-    coupler.setIndependentCoordinateNames(opensim.ArrayStr(independent, 1))
-    coupler.setDependentCoordinateName(dependent)
-    coupler.setFunction(opensim.LinearFunction(1.0, 0.0))
-
-    operators.add_constraint(model, coupler, reinitialize=True)
+    operators.add_coordinate_coupler_constraint(
+        model, "coupler1", independent, dependent, opensim.LinearFunction(1.0, 0.0),
+        reinitialize=True,
+    )
     assert model.model.getConstraintSet().getSize() == 1
 
     operators.remove_constraint(model, "coupler1", reinitialize=True)
     assert model.model.getConstraintSet().getSize() == 0
+
+
+def test_add_weld_constraint_removes_relative_motion():
+    model = make_model()
+    body1 = add_free_body(model, "b1")
+    body2 = add_free_body(model, "b2")
+
+    operators.add_weld_constraint(model, "weld1", body1.raw, body2.raw, reinitialize=True)
+
+    assert model.model.getConstraintSet().getSize() == 1
+    assert model.model.getConstraintSet().get("weld1") is not None
+
+
+def test_add_point_constraint_connects_a_body_to_ground():
+    # Confirmed directly (OpenSim 4.6): a PointConstraint between two
+    # non-ground bodies crashes the process natively in initSystem() --
+    # see add_point_constraint's docstring. Ground-to-body is the
+    # confirmed-safe case, so that's what this exercises.
+    model = make_model()
+    body = add_free_body(model, "b1")
+
+    constraint = operators.add_point_constraint(
+        model, "point1", model.model.getGround(), (0, 0, 0), body.raw, (0, 0, 0),
+        reinitialize=True,
+    )
+
+    assert constraint.name == "point1"
+    assert model.model.getConstraintSet().getSize() == 1
 
 
 # ---------------------------------------------------------------------------

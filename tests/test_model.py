@@ -8,7 +8,6 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from opensim_models import OpenSimModel, operators
-from opensim_models.ensemble import OpenSimEnsemble
 
 # DEFAULT_MODEL_PATH is User's internal default, reused here as a real .osim
 # fixture to test OpenSimModel's generic facade rather than User specifically.
@@ -624,24 +623,19 @@ def test_merge_operations_reject_non_model_operands(operation):
         operation(model)
 
 
-# `+` no longer merges operands into a new OpenSimModel: it now returns an
-# OpenSimEnsemble, keeping both containers separate/independently editable
-# (see opensim_models.ensemble). The permanent, in-place merge these tests
-# used to exercise via `+` still exists, just moved to add_model() directly
-# (covered above); these three tests instead verify the new operator's own
-# contract -- it builds a non-mutating ensemble of the original containers,
-# and ensemble.combined() still produces the same merged result on demand.
+# `+` always merges both operands into one new, generic OpenSimModel (via
+# add_model(), applied twice to a fresh OpenSimModel) -- neither operand is
+# mutated, and the result is never a subclass of either operand.
 
 
-def test_add_operator_returns_a_new_ensemble_without_mutating_operands():
+def test_add_operator_returns_a_new_merged_model_without_mutating_operands():
     first = make_model()
     second = make_model()
 
     combined = first + second
 
-    assert isinstance(combined, OpenSimEnsemble)
-    assert combined.containers == (first, second)
-    assert len(combined.combined().bodies) == len(first.bodies) + len(second.bodies)
+    assert type(combined) is OpenSimModel
+    assert len(combined.bodies) == len(first.bodies) + len(second.bodies)
     assert len(first.bodies) == 22
     assert len(second.bodies) == 22
 
@@ -651,13 +645,12 @@ def test_radd_delegates_to_the_left_operand():
     second = make_model()
 
     # first.__radd__(second) supports `second + first` when second doesn't
-    # implement __add__; the resulting ensemble keeps second's containers
-    # first (matching `second + first`'s left-to-right order).
+    # implement __add__; the result merges second's components first,
+    # matching `second + first`'s left-to-right order.
     combined = first.__radd__(second)
 
-    assert isinstance(combined, OpenSimEnsemble)
-    assert combined.containers == (second, first)
-    assert len(combined.combined().bodies) == len(first.bodies) + len(second.bodies)
+    assert type(combined) is OpenSimModel
+    assert len(combined.bodies) == len(first.bodies) + len(second.bodies)
 
 
 def test_chained_add_merges_three_models():
@@ -667,9 +660,8 @@ def test_chained_add_merges_three_models():
 
     combined = first + second + third
 
-    assert isinstance(combined, OpenSimEnsemble)
-    assert combined.containers == (first, second, third)  # flattened, not nested
-    assert len(combined.combined().bodies) == 22 * 3
+    assert type(combined) is OpenSimModel
+    assert len(combined.bodies) == 22 * 3
 
 
 # ---------------------------------------------------------------------------

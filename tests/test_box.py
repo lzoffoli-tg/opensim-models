@@ -7,14 +7,15 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from opensim_models import Box
-from opensim_models.models.box.box import _MESH_FILENAME, _MESHES_DIR
+from opensim_models import Box, components
+from opensim_models.model import OpenSimModel
+from opensim_models.components.box import _MESH_FILENAME, _MESHES_DIR
 
 opensim = pytest.importorskip("opensim")
 
 
 def joint_offset_frames(box):
-    joint = box.model.getJointSet().get("box_joint")
+    joint = box._container.model.getJointSet().get("box_joint")
     parent = opensim.PhysicalOffsetFrame.safeDownCast(joint.getParentFrame())
     child = opensim.PhysicalOffsetFrame.safeDownCast(joint.getChildFrame())
     return parent, child
@@ -37,14 +38,14 @@ def test_default_mass_is_one_kilogram():
     box = Box(width=0.2, height=0.3, depth=0.1)
 
     assert box.mass_kg == pytest.approx(1.0)
-    body = box.model.getBodySet().get("box")
+    body = box._container.model.getBodySet().get("box")
     assert body.get_mass() == pytest.approx(1.0)
 
 
 def test_mass_and_inertia_match_a_solid_rectangular_prism():
     box = Box(width=0.2, height=0.3, depth=0.4, mass_kg=5.0)
 
-    body = box.model.getBodySet().get("box")
+    body = box._container.model.getBodySet().get("box")
     assert body.get_mass() == pytest.approx(5.0)
     moments = body.getInertia().getMoments()
     expected = expected_inertia(5.0, 0.2, 0.3, 0.4)
@@ -195,9 +196,9 @@ def test_corners_translate_rigidly_with_the_box():
 def test_model_has_a_single_body_welded_to_ground():
     box = Box(width=0.1, height=0.1, depth=0.1)
 
-    assert box.model.getBodySet().getSize() == 1
-    assert box.model.getJointSet().getSize() == 1
-    joint = box.model.getJointSet().get("box_joint")
+    assert box._container.model.getBodySet().getSize() == 1
+    assert box._container.model.getJointSet().getSize() == 1
+    joint = box._container.model.getJointSet().get("box_joint")
     assert opensim.WeldJoint.safeDownCast(joint) is not None
 
 
@@ -205,9 +206,9 @@ def test_instances_are_backed_by_independent_opensim_models():
     small = Box(width=0.1, height=0.1, depth=0.1)
     large = Box(width=0.9, height=0.9, depth=0.9, mass_kg=9.0)
 
-    assert small.model is not large.model
-    assert small.model.getBodySet().get("box").get_mass() != pytest.approx(
-        large.model.getBodySet().get("box").get_mass()
+    assert small._container.model is not large._container.model
+    assert small._container.model.getBodySet().get("box").get_mass() != pytest.approx(
+        large._container.model.getBodySet().get("box").get_mass()
     )
 
 
@@ -220,7 +221,33 @@ def test_copy_preserves_type_and_parameters():
     assert duplicate.width == 0.2
     assert duplicate.mass_kg == 2.0
     assert duplicate.origin == pytest.approx((1.0, 0.0, 0.0))
-    assert duplicate.model is not box.model
+    assert duplicate._container.model is not box._container.model
+
+
+# ---------------------------------------------------------------------------
+# Box is a component (Body), not a container (OpenSimModel)
+# ---------------------------------------------------------------------------
+
+
+def test_box_is_a_body_component_not_a_container():
+    box = Box(width=0.1, height=0.1, depth=0.1)
+
+    assert isinstance(box, components.Body)
+    assert not isinstance(box, OpenSimModel)
+    assert not hasattr(box, "show")
+
+
+def test_box_is_addable_to_a_model_in_both_directions():
+    box = Box(width=0.1, height=0.1, depth=0.1, origin=(2.0, 0.0, 0.0))
+    model = OpenSimModel(model_path=None)
+
+    merged = model + box
+    assert isinstance(merged, OpenSimModel)
+    assert "box" in merged.bodies
+    assert "box" not in model.bodies
+
+    merged_reflected = box + model
+    assert "box" in merged_reflected.bodies
 
 
 # ---------------------------------------------------------------------------
@@ -253,8 +280,7 @@ def test_dimension_setter_regenerates_the_mesh_on_disk():
     assert mesh_path.read_text().count("facet normal") == 12
 
 
-def test_box_registers_its_own_mesh_directory_for_show():
+def test_box_registers_its_own_mesh_directory():
     box = Box(width=0.1, height=0.1, depth=0.1)
 
-    assert _MESHES_DIR in box.geometry_directories
-    assert box.visualizer is None
+    assert _MESHES_DIR in box._container.geometry_directories

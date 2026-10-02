@@ -1,6 +1,8 @@
 # opensim-models
 
-Package Python per costruire e comporre modelli OpenSim. `OpenSimModel` è una facade generica su un modello OpenSim (caricamento, coordinate, marker, muscoli, scaling, rotazione/traslazione rigida, visualizzazione (con riproduzione di una simulazione), composizione di più modelli, importazione da CAD). Le sottoclassi concrete oggi disponibili sono `User`, un utente antropometrico costruito a partire dal modello full-body di Rajagopal-Lai-Uhlrich e dai riferimenti ANSUR II, già scalato e pronto per analisi biomeccaniche, simulazioni e manipolazione della postura, `Screen`, un pannello plexiglass parametrico (es. per rappresentare un monitor in scena), e `Box`, un parallelepipedo rigido generico (es. per un ingombro o un componente di un attrezzo).
+Package Python per costruire e comporre modelli OpenSim. `OpenSimModel` è una facade generica su un modello OpenSim (caricamento, coordinate, marker, muscoli, scaling, rotazione/traslazione rigida, visualizzazione (con riproduzione di una simulazione), composizione di più modelli, importazione da CAD) -- un **container**, nel senso CAD del termine. `User`, oggi la sua unica sottoclasse concreta, è un utente antropometrico costruito a partire dal modello full-body di Rajagopal-Lai-Uhlrich e dai riferimenti ANSUR II, già scalato e pronto per analisi biomeccaniche, simulazioni e manipolazione della postura.
+
+`Screen` e `Box` sono invece **componenti** (parti, sempre nel senso CAD): un pannello plexiglass parametrico (es. per rappresentare un monitor in scena) e un parallelepipedo rigido generico (es. per un ingombro o un componente di un attrezzo). A differenza di `User`, non sono `OpenSimModel`: non hanno un proprio `show()`/`export()`, e per essere visualizzati vanno prima aggiunti a un container (`model + screen`, `model + box`, vedi "Comporre più modelli").
 
 ## Contenuto del progetto
 
@@ -18,12 +20,11 @@ src/opensim_models/
 				ansur_ref.csv           # riferimenti antropometrici ANSUR II
 				rajagopalaiulrich2023.osim  # modello OpenSim base di User
 				meshes/*.vtp            # mesh per il rendering di User
-		screen/
-			screen.py                  # Screen(OpenSimModel): pannello plexiglass parametrico
-			assets/meshes/              # mesh generata automaticamente per Screen (vedi sotto)
-		box/
-			box.py                     # Box(OpenSimModel): parallelepipedo rigido generico
-			assets/meshes/              # mesh generata automaticamente per Box (vedi sotto)
+	components/
+		__init__.py                 # wrapper Python-friendly (Body, Marker, Joint, ...) dietro gli accessori di OpenSimModel
+		box.py                      # Box(components.Body): parallelepipedo rigido generico
+		screen.py                   # Screen(components.Body): pannello plexiglass parametrico
+		assets/meshes/               # mesh generata automaticamente per Box/Screen (vedi sotto)
 tests/
 	test_model.py                  # test esaustivi di OpenSimModel (facade + composizione)
 	test_operators.py              # test esaustivi di opensim_models.operators
@@ -34,9 +35,9 @@ tests/
 	test_cad_import.py             # test di OpenSimModel.from_step (richiede pythonocc-core)
 ```
 
-Ogni modello specifico (oggi `User`, `Screen` e `Box`) vive nella propria sottocartella sotto `models/`, con il proprio codice e i propri asset. Nuovi modelli (es. un attrezzo da palestra) si aggiungono allo stesso modo, come ulteriori sottoclassi di `OpenSimModel`.
+Ogni modello specifico (oggi solo `User`) vive nella propria sottocartella sotto `models/`, con il proprio codice e i propri asset; nuovi modelli (es. un attrezzo da palestra completo) si aggiungono allo stesso modo, come ulteriori sottoclassi di `OpenSimModel`. I componenti (`Box`, `Screen`) vivono invece in `components/`, distinti da `models/` proprio perché non sono container: nuovi componenti si aggiungono come ulteriori sottoclassi di `components.Body`, nello stesso file (uno per componente).
 
-**Superficie pubblica.** Per ogni modello, l'unico simbolo importabile è la sua sottoclasse di `OpenSimModel` (`User`, `Screen`, `Box`): `from opensim_models import OpenSimModel, User, Screen, Box` è l'API pubblica principale del package. Tutto il resto -- dataset ANSUR, funzioni di risoluzione dei percentili, mappe di scaling, lettura CAD -- è dettaglio implementativo del modello che lo usa: vive in moduli non riesportati dai vari `__init__.py` (per `User`, i moduli con prefisso `_`, come `_data.py` e `_mapping.py`) e non è pensato per essere importato direttamente. Fa eccezione `opensim_models.operators` (vedi sotto): un modulo di utilità pensato per essere importato direttamente (`from opensim_models import operators`), non riesportato al livello superiore del package per restare distinto dalle sottoclassi di modello.
+**Superficie pubblica.** L'unico simbolo importabile per ciascun modello/componente è la sua classe (`User`, `Screen`, `Box`): `from opensim_models import OpenSimModel, User, Screen, Box` è l'API pubblica principale del package. Tutto il resto -- dataset ANSUR, funzioni di risoluzione dei percentili, mappe di scaling, lettura CAD -- è dettaglio implementativo del modello che lo usa: vive in moduli non riesportati dai vari `__init__.py` (per `User`, i moduli con prefisso `_`, come `_data.py` e `_mapping.py`) e non è pensato per essere importato direttamente. Fa eccezione `opensim_models.operators` (vedi sotto): un modulo di utilità pensato per essere importato direttamente (`from opensim_models import operators`), non riesportato al livello superiore del package per restare distinto dalle classi di modello/componente.
 
 Il modello di `User` referenzia 81 mesh VTP, tutte incluse nella cartella `models/user/assets/meshes/`. Sono presenti anche quattro alias aggiuntivi per femori e tibie.
 
@@ -482,7 +483,7 @@ Il file esportato con `user.export(...)` contiene il modello scalato con la post
 
 ## Creare uno schermo (Screen)
 
-`Screen` è un pannello rigido in plexiglass, spesso 1 mm, pensato per rappresentare un monitor/schermo nella scena:
+`Screen` è un pannello rigido in plexiglass, spesso 1 mm, pensato per rappresentare un monitor/schermo nella scena. È un **componente** (sottoclasse di `components.Body`, non di `OpenSimModel`): non ha un proprio `show()`/`export()` -- va prima aggiunto a un container (vedi "Comporre più modelli") per poter essere visualizzato:
 
 ```python
 from opensim_models import Screen
@@ -490,7 +491,8 @@ from opensim_models import Screen
 screen = Screen()  # 22", 16:9, centrato nell'origine, verticale (angle_deg=90)
 
 print(screen.width_mm, screen.height_mm)  # None, None: dimensione derivata dalla diagonale
-screen.show()
+
+(user_model + screen).show()  # un componente da solo non si vede: va aggiunto a un container
 ```
 
 Le dimensioni si ottengono in due modi alternativi, con priorità automatica: se `width_mm` e `height_mm` sono *entrambi* impostati vincono loro; altrimenti (compreso il default, con entrambi `None`) la dimensione viene calcolata dalla diagonale in pollici (`inches`, default `22`) e dal rapporto di forma (`ratio`, default `"16:9"`):
@@ -510,11 +512,11 @@ screen.set_width_mm(600.0)
 screen.set_height_mm(340.0)   # passa in modalità dimensioni esplicite solo una volta impostate entrambe
 ```
 
-Massa e tensore d'inerzia del pannello derivano dal suo volume (larghezza × altezza × 1 mm) assumendo una densità da plexiglass/PMMA (`1180 kg/m³`); una mesh a forma di parallelepipedo viene generata automaticamente e salvata in `models/screen/assets/meshes/screen_panel.stl`, rigenerata a ogni cambio di dimensione. Il pannello è un unico `opensim.Body` ("screen_panel") saldato al ground con un `WeldJoint` (nessun grado di libertà): la sua posa è interamente determinata da `center_x`/`center_y`/`center_z`/`angle_deg`.
+Massa e tensore d'inerzia del pannello derivano dal suo volume (larghezza × altezza × 1 mm) assumendo una densità da plexiglass/PMMA (`1180 kg/m³`); una mesh a forma di parallelepipedo viene generata automaticamente e salvata in `components/assets/meshes/screen_panel.stl`, rigenerata a ogni cambio di dimensione. Il pannello è internamente un unico `opensim.Body` ("screen_panel") saldato al ground con un `WeldJoint` (nessun grado di libertà): la sua posa è interamente determinata da `center_x`/`center_y`/`center_z`/`angle_deg`, oppure da `rotate()`/`translate()` (thin wrapper sulle omonime funzioni di `operators`, applicate al container privato che lo rappresenta).
 
 ## Creare un parallelepipedo (Box)
 
-`Box` è un parallelepipedo rigido generico, pensato per rappresentare un oggetto/ingombro qualunque nella scena (es. un elemento di un attrezzo) quando non serve altro che la sua geometria, massa e posa:
+`Box` è un parallelepipedo rigido generico, pensato per rappresentare un oggetto/ingombro qualunque nella scena (es. un elemento di un attrezzo) quando non serve altro che la sua geometria, massa e posa. Come `Screen`, è un **componente** (sottoclasse di `components.Body`): nessun `show()`/`export()` proprio, va aggiunto a un container per essere visualizzato:
 
 ```python
 from opensim_models import Box
@@ -527,9 +529,9 @@ box = Box(
 )
 ```
 
-A differenza di `Screen`, la massa è un dato diretto (`mass_kg`, non derivata da una densità di materiale); il tensore d'inerzia resta comunque quello analitico di un parallelepipedo omogeneo pieno con quella massa e quelle dimensioni. Ogni dimensione ha una property in lettura (`width`, `height`, `depth`, `mass_kg`) e un setter dedicato (`set_width`, `set_height`, `set_depth`, `set_mass_kg`) che ricostruisce corpo, mesh e giunto -- la mesh, generata con lo stesso writer STL usato internamente da `operators.add_box_body` (`opensim_models._primitives.write_box_mesh`), viene salvata in `models/box/assets/meshes/box.stl` e rigenerata a ogni cambio di dimensione. `width`/`height`/`depth`/`mass_kg` devono essere finiti e strettamente positivi, altrimenti il costruttore (o il setter) solleva `ValueError`.
+A differenza di `Screen`, la massa è un dato diretto (`mass_kg`, non derivata da una densità di materiale); il tensore d'inerzia resta comunque quello analitico di un parallelepipedo omogeneo pieno con quella massa e quelle dimensioni. Ogni dimensione ha una property in lettura (`width`, `height`, `depth`, `mass_kg`) e un setter dedicato (`set_width`, `set_height`, `set_depth`, `set_mass_kg`) che ricostruisce corpo, mesh e giunto -- la mesh, generata con lo stesso writer STL usato internamente da `operators.add_box_body` (`opensim_models._primitives.write_box_mesh`), viene salvata in `components/assets/meshes/box.stl` e rigenerata a ogni cambio di dimensione. `width`/`height`/`depth`/`mass_kg` devono essere finiti e strettamente positivi, altrimenti il costruttore (o il setter) solleva `ValueError`.
 
-`origin`/`angle_deg` impostano la posa iniziale (un `WeldJoint` verso ground), e hanno anche loro un setter dedicato (`set_origin`, `set_angle_deg`, ciascuno dei due preserva l'altra metà della posa corrente): ma a differenza delle dimensioni, le property stesse vengono sempre lette direttamente dalla posa corrente del corpo, quindi riflettono comunque l'ultima cosa che lo ha spostato -- gli argomenti del costruttore, `set_origin`/`set_angle_deg`, un setter di dimensione (che preserva la posa corrente durante la ricostruzione), oppure `rotate()`/`translate()` (ereditati da `OpenSimModel`, vedi sopra) -- tutti modi ugualmente validi per riposizionare un `Box` dopo la costruzione:
+`origin`/`angle_deg` impostano la posa iniziale (un `WeldJoint` verso ground), e hanno anche loro un setter dedicato (`set_origin`, `set_angle_deg`, ciascuno dei due preserva l'altra metà della posa corrente): ma a differenza delle dimensioni, le property stesse vengono sempre lette direttamente dalla posa corrente del corpo, quindi riflettono comunque l'ultima cosa che lo ha spostato -- gli argomenti del costruttore, `set_origin`/`set_angle_deg`, un setter di dimensione (che preserva la posa corrente durante la ricostruzione), oppure `rotate()`/`translate()` -- tutti modi ugualmente validi per riposizionare un `Box` dopo la costruzione:
 
 ```python
 box.set_angle_deg((0.0, 0.0, 0.0))           # orientamento assoluto, origine invariata
@@ -547,30 +549,53 @@ for corner in box.corners:
     print(corner)
 ```
 
-Come `Screen`, `Box` è un unico `opensim.Body` ("box") saldato al ground con un `WeldJoint` (nessun grado di libertà): non ha una `postura` articolare propria, è pensato per essere posizionato/orientato rigidamente, non animato internamente.
+Come `Screen`, `Box` è internamente un unico `opensim.Body` ("box") saldato al ground con un `WeldJoint` (nessun grado di libertà): non ha una `postura` articolare propria, è pensato per essere posizionato/orientato rigidamente, non animato internamente.
 
 ## Comporre più modelli
 
-Due o più `OpenSimModel` (ad esempio un `User` e uno `Screen`) possono essere combinati in un unico modello OpenSim esportabile:
+Due o più `OpenSimModel` (ad esempio due `User`) possono essere combinati in un unico modello OpenSim esportabile:
 
 ```python
-combined = user_model + screen_model
+combined = user_model_a + user_model_b
 combined.export("combined.osim")
 ```
 
-`combined` è un `OpenSimModel` generico che contiene tutti i componenti di entrambi gli operandi (corpi, giunti, muscoli/forze, marker, vincoli); nessuno dei due operandi originali viene modificato. Se un componente del secondo modello ha lo stesso nome di uno già presente nel primo, viene rinominato automaticamente con un prefisso (il nome della classe del modello, es. `screen_screen_panel`, oppure un prefisso esplicito tramite `name=`). I giunti agganciati al `ground` nei modelli sorgente restano agganciati al ground condiviso del modello combinato, così i due modelli mantengono la propria collocazione di default.
+`combined` è un `OpenSimModel` generico che contiene tutti i componenti di entrambi gli operandi (corpi, giunti, muscoli/forze, marker, vincoli); nessuno dei due operandi originali viene modificato, e il risultato non è mai una sottoclasse di uno dei due (anche `user_a + user_b` è un `OpenSimModel` generico, non uno `User`). Se un componente del secondo modello ha lo stesso nome di uno già presente nel primo, viene rinominato automaticamente con un prefisso (il nome della classe dell'operando, oppure un prefisso esplicito tramite `add_model(..., name=...)`). I giunti agganciati al `ground` nei modelli sorgente restano agganciati al ground condiviso del modello combinato, così i due modelli mantengono la propria collocazione di default.
 
-Per comporre più di due modelli, `+` si può concatenare (`a + b + c`), oppure si può operare in place su un modello esistente:
+Un **componente** standalone come `Box`/`Screen` (non un `OpenSimModel`, ma dotato di un container interno privato) si aggiunge con lo stesso `+`, in entrambe le direzioni, con lo stesso risultato -- un `OpenSimModel` fuso, pronto per `show()`/`export()`:
+
+```python
+scena = user_model + screen       # oppure screen + user_model: stesso risultato
+"screen_panel" in scena.bodies    # True
+"screen_panel" in user_model.bodies  # False: user_model non è stato modificato
+scena.show()
+```
+
+Per comporre più di due modelli/componenti, `+` si può concatenare (`a + b + c`), oppure si può operare in place su un modello esistente:
 
 ```python
 scene = OpenSimModel(model_path=None)
 scene.add_model(user_model)
-scene.add_model(screen_model, name="screen")
 ...
-scene.remove_model(screen_model)  # torna allo stato precedente
+scene.remove_model(user_model)  # torna allo stato precedente
 ```
 
-`add_model`, `remove_model`, `+` e la sua forma riflessa richiedono sempre che l'altro operando sia un `OpenSimModel`: in caso contrario sollevano `TypeError`. `remove_model` richiede che il modello indicato sia stato effettivamente aggiunto con `add_model` in precedenza, altrimenti solleva `ValueError`.
+`add_model`/`remove_model` richiedono sempre un `OpenSimModel`; `+`/la sua forma riflessa accettano anche un componente standalone come `Box`/`Screen` (vedi sopra). In entrambi i casi, un operando del tipo sbagliato solleva `TypeError`. `remove_model` richiede che il modello indicato sia stato effettivamente aggiunto con `add_model` in precedenza, altrimenti solleva `ValueError`.
+
+### Agganciare un componente a un altro corpo (`attach_component`)
+
+Un `Box`/`Screen` appena fuso in un modello (`model + box`) eredita il proprio giunto originale (saldato al ground del componente stesso, prima della fusione). Per agganciarlo invece a un body *del modello risultante* -- es. il torso di uno `User`, non il ground condiviso -- usa `model.attach_component`:
+
+```python
+merged = user_model + box
+merged.attach_component(
+    merged.body("box"), to=merged.body("torso"),
+    child_point="com", parent_point=(0.0, 0.1, 0.0),  # 10 cm sopra il com del torso
+    joint_type="weld",
+)
+```
+
+`attach_component` rimuove il giunto attuale di `child` e ne crea uno nuovo (stesso tipo di `add_free_joint`/`add_pin_joint`/.../`add_weld_joint`, scelto con `joint_type`) verso `to`, nel punto indicato da `child_point`/`parent_point` -- `"com"` (default, centro di massa) oppure una tupla `(x, y, z)` esplicita nel frame locale del corpo. `child`/`to` devono già appartenere allo stesso modello (un `Joint` OpenSim non può mai collegare due `opensim.Model` diversi): per un componente standalone, questo significa fonderlo prima con `+`, come nell'esempio sopra. Solleva `ValueError` se `child` non è collegato da nessun giunto nel modello (es. non è mai stato fuso, o il suo giunto è già stato rimosso).
 
 ## Costruire un modello da CAD (.step/.stp)
 

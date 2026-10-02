@@ -1384,6 +1384,38 @@ class OpenSimModel:
             reinitialize=reinitialize,
         )
 
+    def attach_component(
+        self,
+        child: Any,
+        *,
+        to: Any,
+        child_point: Any = "com",
+        parent_point: Any = "com",
+        joint_type: str = "weld",
+        name: str | None = None,
+        reinitialize: bool = False,
+    ) -> "components.Joint":
+        """Re-attach ``child``'s existing joint so its parent becomes ``to``.
+
+        A thin wrapper equivalent to ``operators.attach_component(self,
+        child, to=to, ...)``: see
+        :func:`~opensim_models.operators.attach_component` for the full
+        semantics (imported locally, see :meth:`add_body`) -- including why
+        ``child``/``to`` must already both be in this model.
+        """
+        from . import operators
+
+        return operators.attach_component(
+            self,
+            child,
+            to=to,
+            child_point=child_point,
+            parent_point=parent_point,
+            joint_type=joint_type,
+            name=name,
+            reinitialize=reinitialize,
+        )
+
     def add_force(self, force: Any, *, reinitialize: bool = False) -> "components.Force":
         """Add an already-constructed force/actuator to this model.
 

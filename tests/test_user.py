@@ -9,7 +9,6 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from opensim_models import OpenSimModel, User
-from opensim_models.ensemble import OpenSimEnsemble
 
 # User only exposes DEFAULT_DATASET/DEFAULT_MESHES_DIR/load_ansur/resolve_reference
 # internally; tests reach into the implementation modules directly to exercise them.
@@ -597,19 +596,11 @@ def test_user_registers_its_own_mesh_directory_for_show():
 
 
 @requires_opensim
-def test_adding_two_users_returns_an_ensemble_not_a_user():
+def test_adding_two_users_degrades_to_a_generic_opensimmodel():
     user_a = make_user(gender="M")
     user_b = make_user(gender="F")
 
     combined = user_a + user_b
 
-    assert type(combined) is OpenSimEnsemble
-    assert combined.containers == (user_a, user_b)
-
-
-@requires_opensim
-def test_combining_two_users_degrades_to_a_generic_opensimmodel():
-    combined = (make_user(gender="M") + make_user(gender="F")).combined()
-
     assert type(combined) is OpenSimModel
-    assert len(combined.bodies) == 44
+    assert len(combined.bodies) == len(user_a.bodies) + len(user_b.bodies) == 44

@@ -6,8 +6,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from opensim_models import Screen
-from opensim_models.models.screen.screen import (
+from opensim_models import Screen, components
+from opensim_models.model import OpenSimModel
+from opensim_models.components.screen import (
     _MESH_FILENAME,
     _MESHES_DIR,
     _PLEXIGLASS_DENSITY_KG_M3,
@@ -18,7 +19,7 @@ opensim = pytest.importorskip("opensim")
 
 
 def joint_offset_frames(screen):
-    joint = screen.model.getJointSet().get("screen_panel_joint")
+    joint = screen._container.model.getJointSet().get("screen_panel_joint")
     parent = opensim.PhysicalOffsetFrame.safeDownCast(joint.getParentFrame())
     child = opensim.PhysicalOffsetFrame.safeDownCast(joint.getChildFrame())
     return parent, child
@@ -41,7 +42,7 @@ def test_default_size_comes_from_22in_16_9_diagonal():
     scale = diagonal_mm / math.hypot(16, 9)
     assert screen.width_mm is None
     assert screen.height_mm is None
-    body = screen.model.getBodySet().get("screen_panel")
+    body = screen._container.model.getBodySet().get("screen_panel")
     assert body.get_mass() == pytest.approx(
         expected_mass_kg(16 * scale, 9 * scale), rel=1e-6
     )
@@ -52,7 +53,7 @@ def test_explicit_size_overrides_diagonal_and_ratio():
 
     assert screen.width_mm == 500.0
     assert screen.height_mm == 300.0
-    body = screen.model.getBodySet().get("screen_panel")
+    body = screen._container.model.getBodySet().get("screen_panel")
     assert body.get_mass() == pytest.approx(expected_mass_kg(500.0, 300.0), rel=1e-6)
 
 
@@ -61,7 +62,7 @@ def test_only_one_of_width_height_falls_back_to_diagonal():
 
     diagonal_mm = 22 * 25.4
     scale = diagonal_mm / math.hypot(16, 9)
-    body = screen.model.getBodySet().get("screen_panel")
+    body = screen._container.model.getBodySet().get("screen_panel")
     assert body.get_mass() == pytest.approx(
         expected_mass_kg(16 * scale, 9 * scale), rel=1e-6
     )
@@ -104,6 +105,28 @@ def test_default_angle_stands_the_panel_upright():
 
 
 # ---------------------------------------------------------------------------
+# rotate()/translate()
+# ---------------------------------------------------------------------------
+
+
+def test_rotate_about_its_own_com_updates_angle_but_not_origin():
+    screen = Screen(center_x=1.0, center_y=2.0, center_z=0.0)
+    original_com = screen.com
+
+    screen.rotate(screen.com, (0.0, 1.0, 0.0), 30.0)
+
+    assert screen.com == pytest.approx(original_com)
+
+
+def test_translate_moves_the_panel():
+    screen = Screen(center_x=0.0, center_y=0.0, center_z=0.0)
+
+    screen.translate((5.0, 0.0, 0.0))
+
+    assert screen.com == pytest.approx((5.0, 0.0, 0.0))
+
+
+# ---------------------------------------------------------------------------
 # Model structure
 # ---------------------------------------------------------------------------
 
@@ -111,9 +134,9 @@ def test_default_angle_stands_the_panel_upright():
 def test_model_has_a_single_body_welded_to_ground():
     screen = Screen()
 
-    assert screen.model.getBodySet().getSize() == 1
-    assert screen.model.getJointSet().getSize() == 1
-    joint = screen.model.getJointSet().get("screen_panel_joint")
+    assert screen._container.model.getBodySet().getSize() == 1
+    assert screen._container.model.getJointSet().getSize() == 1
+    joint = screen._container.model.getJointSet().get("screen_panel_joint")
     assert opensim.WeldJoint.safeDownCast(joint) is not None
 
 
@@ -121,9 +144,9 @@ def test_instances_are_backed_by_independent_opensim_models():
     small = Screen(width_mm=100.0, height_mm=100.0)
     large = Screen(width_mm=900.0, height_mm=900.0)
 
-    assert small.model is not large.model
-    assert small.model.getBodySet().get("screen_panel").get_mass() != pytest.approx(
-        large.model.getBodySet().get("screen_panel").get_mass()
+    assert small._container.model is not large._container.model
+    assert small._container.model.getBodySet().get("screen_panel").get_mass() != pytest.approx(
+        large._container.model.getBodySet().get("screen_panel").get_mass()
     )
 
 
@@ -135,7 +158,33 @@ def test_copy_preserves_type_and_parameters_without_a_screen_override():
     assert type(duplicate) is Screen
     assert duplicate.width_mm == 500.0
     assert duplicate.center_x == 1.0
-    assert duplicate.model is not screen.model
+    assert duplicate._container.model is not screen._container.model
+
+
+# ---------------------------------------------------------------------------
+# Screen is a component (Body), not a container (OpenSimModel)
+# ---------------------------------------------------------------------------
+
+
+def test_screen_is_a_body_component_not_a_container():
+    screen = Screen()
+
+    assert isinstance(screen, components.Body)
+    assert not isinstance(screen, OpenSimModel)
+    assert not hasattr(screen, "show")
+
+
+def test_screen_is_addable_to_a_model_in_both_directions():
+    screen = Screen(center_x=2.0)
+    model = OpenSimModel(model_path=None)
+
+    merged = model + screen
+    assert isinstance(merged, OpenSimModel)
+    assert "screen_panel" in merged.bodies
+    assert "screen_panel" not in model.bodies
+
+    merged_reflected = screen + model
+    assert "screen_panel" in merged_reflected.bodies
 
 
 # ---------------------------------------------------------------------------
@@ -175,7 +224,7 @@ def test_switching_back_to_diagonal_sizing_after_explicit_size():
 
     diagonal_mm = 22 * 25.4
     scale = diagonal_mm / math.hypot(16, 9)
-    body = screen.model.getBodySet().get("screen_panel")
+    body = screen._container.model.getBodySet().get("screen_panel")
     assert body.get_mass() == pytest.approx(
         expected_mass_kg(16 * scale, 9 * scale), rel=1e-6
     )
@@ -193,8 +242,7 @@ def test_size_setter_regenerates_the_mesh_on_disk():
     assert mesh_path.read_text().count("facet normal") == 12
 
 
-def test_screen_registers_its_own_mesh_directory_for_show():
+def test_screen_registers_its_own_mesh_directory():
     screen = Screen()
 
-    assert _MESHES_DIR in screen.geometry_directories
-    assert screen.visualizer is None
+    assert _MESHES_DIR in screen._container.geometry_directories
