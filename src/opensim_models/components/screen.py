@@ -1,17 +1,23 @@
-"""A parametric, plexiglass display-panel model."""
+"""A parametric, plexiglass display-panel component."""
 
 from __future__ import annotations
 
 import math
 from pathlib import Path
+from typing import Any
 
-from ...model import OpenSimModel
+from . import Body
+from ..model import OpenSimModel
+from ..operators import rotate_object, translate_object
 
 __all__ = ["Screen"]
 
 _ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 _MESHES_DIR = _ASSETS_DIR / "meshes"
 _MESH_FILENAME = "screen_panel.stl"
+
+_BODY_NAME = "screen_panel"
+_JOINT_NAME = "screen_panel_joint"
 
 _THICKNESS_MM = 1.0
 # PMMA ("plexiglass"/acrylic glass) density.
@@ -89,8 +95,8 @@ def _write_box_mesh(
     destination_path.write_text("\n".join(lines) + "\n")
 
 
-class Screen(OpenSimModel):
-    """A rigid, 1 mm-thick plexiglass display panel.
+class Screen(Body):
+    """A rigid, 1 mm-thick plexiglass display panel -- a single component.
 
     The panel is a single ``opensim.Body`` ("screen_panel") welded to ground
     at (``center_x``, ``center_y``, ``center_z``) and tilted about ground's
@@ -108,6 +114,15 @@ class Screen(OpenSimModel):
     plexiglass (PMMA) density, and a matching box mesh is (re)generated and
     written to ``assets/meshes/screen_panel.stl`` next to this module
     whenever the panel's dimensions change.
+
+    Like any other component, a ``Screen`` has no ``show()`` of its own --
+    :meth:`~opensim_models.model.OpenSimModel.show` operates on
+    containers, never on a single part. A ``Screen`` is self-contained (it
+    carries its own private ``OpenSimModel`` internally to do the actual
+    OpenSim/state work this needs), but to actually *see* it, add it to a
+    container first: ``model + screen`` (or ``screen + model``) returns a
+    new, independent ``OpenSimModel`` with the panel's body merged in,
+    ready to ``.show()``.
 
     Parameters
     ----------
@@ -146,9 +161,11 @@ class Screen(OpenSimModel):
         angle_deg: float = 90,
     ) -> None:
         """Build the panel body/joint from the given size and pose parameters."""
-        super().__init__(model_path=None)
+        # A private, never-exposed OpenSimModel -- see the class docstring
+        # for how this panel actually becomes visible (`model + screen`).
+        self._container = OpenSimModel(model_path=None)
         _MESHES_DIR.mkdir(parents=True, exist_ok=True)
-        self.add_geometry_directory(_MESHES_DIR)
+        self._container.add_geometry_directory(_MESHES_DIR)
 
         self._width_mm = width_mm
         self._height_mm = height_mm
@@ -240,6 +257,53 @@ class Screen(OpenSimModel):
         self._angle_deg = angle_deg
         self._rebuild()
 
+    def rotate(
+        self,
+        origin: Any,
+        direction: tuple[float, float, float],
+        angle_deg: float,
+        inplace: bool = True,
+    ) -> Any:
+        """Rotate this panel by ``angle_deg`` about the axis through ``origin`` along ``direction``.
+
+        Thin wrapper around :func:`~opensim_models.operators.rotate_object`
+        applied to this panel's own private container; see that function
+        for the full parameter/return documentation. ``inplace=True`` (the
+        default) mutates this panel and returns its new ground-frame
+        position; ``inplace=False`` leaves it untouched and returns a
+        standalone ``OpenSimModel`` holding a rotated copy instead (not
+        another ``Screen``, since the rotation is generic to any
+        container).
+        """
+        return rotate_object(self._container, origin, direction, angle_deg, inplace=inplace)
+
+    def translate(self, direction: tuple[float, float, float], inplace: bool = True) -> Any:
+        """Translate this panel by ``direction`` (``dx, dy, dz``), in ground frame.
+
+        Thin wrapper around
+        :func:`~opensim_models.operators.translate_object` applied to this
+        panel's own private container; see that function for the full
+        parameter/return documentation. ``inplace=True`` (the default)
+        mutates this panel and returns its new ground-frame position;
+        ``inplace=False`` leaves it untouched and returns a standalone
+        ``OpenSimModel`` holding a translated copy instead (not another
+        ``Screen``, since the translation is generic to any container).
+        """
+        return translate_object(self._container, direction, inplace=inplace)
+
+    def copy(self) -> "Screen":
+        """Return a new, independent ``Screen`` with the same size, pose and sizing mode."""
+        return Screen(
+            width_mm=self._width_mm,
+            height_mm=self._height_mm,
+            inches=self._inches,
+            ratio=self._ratio,
+            center_x=self._center_x,
+            center_y=self._center_y,
+            center_z=self._center_z,
+            angle_deg=self._angle_deg,
+        )
+
     def _resolve_size_mm(self) -> tuple[float, float]:
         """Return the effective (width_mm, height_mm), applying the sizing priority.
 
@@ -275,28 +339,35 @@ class Screen(OpenSimModel):
         mesh_path = _MESHES_DIR / _MESH_FILENAME
         _write_box_mesh(mesh_path, width_mm, height_mm, _THICKNESS_MM)
 
-        self.model = self.opensim.Model()
-        self.model.setName("Screen")
-        body = self.opensim.Body(
-            "screen_panel",
+        container = self._container
+        container.model = container.opensim.Model()
+        container.model.setName("Screen")
+        body = container.opensim.Body(
+            _BODY_NAME,
             mass,
-            self.opensim.Vec3(0, 0, 0),
-            self.opensim.Inertia(*inertia),
+            container.opensim.Vec3(0, 0, 0),
+            container.opensim.Inertia(*inertia),
         )
-        self.model.addBody(body)
-        body.attachGeometry(self.opensim.Mesh(_MESH_FILENAME))
+        container.model.addBody(body)
+        body.attachGeometry(container.opensim.Mesh(_MESH_FILENAME))
 
-        joint = self.opensim.WeldJoint(
-            "screen_panel_joint",
-            self.model.getGround(),
-            self.opensim.Vec3(self._center_x, self._center_y, self._center_z),
-            self.opensim.Vec3(math.radians(self._angle_deg - 90.0), 0.0, 0.0),
+        joint = container.opensim.WeldJoint(
+            _JOINT_NAME,
+            container.model.getGround(),
+            container.opensim.Vec3(self._center_x, self._center_y, self._center_z),
+            container.opensim.Vec3(math.radians(self._angle_deg - 90.0), 0.0, 0.0),
             body,
-            self.opensim.Vec3(0, 0, 0),
-            self.opensim.Vec3(0, 0, 0),
+            container.opensim.Vec3(0, 0, 0),
+            container.opensim.Vec3(0, 0, 0),
         )
-        self.model.addJoint(joint)
+        container.model.addJoint(joint)
 
-        self.model.finalizeConnections()
-        self.state = self.model.initSystem()
-        self._visualizer = None
+        container.model.finalizeConnections()
+        container.state = container.model.initSystem()
+        container._visualizer = None
+
+        # The rebuild above replaces container.model wholesale, so the
+        # previous body/joint SWIG proxies (and this wrapper's own
+        # inherited `_owner`/`_raw`) are now stale -- re-point them at the
+        # fresh body, same as any other _ComponentWrapper construction.
+        super().__init__(container, container.model.getBodySet().get(_BODY_NAME))

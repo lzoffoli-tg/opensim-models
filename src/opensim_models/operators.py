@@ -67,6 +67,9 @@ __all__ = [
     "remove_marker",
     "add_constraint",
     "remove_constraint",
+    "add_weld_constraint",
+    "add_point_constraint",
+    "add_coordinate_coupler_constraint",
     "add_controller",
     "remove_controller",
     "add_contact_geometry",
@@ -972,31 +975,85 @@ def remove_force(
 
 
 def add_muscle(
-    model: "OpenSimModel", muscle: Any, *, reinitialize: bool = False
+    model: "OpenSimModel",
+    name: str,
+    origin_component: Any,
+    origin_position: tuple[float, float, float],
+    insertion_component: Any,
+    insertion_position: tuple[float, float, float],
+    *,
+    max_isometric_force: float = 1000.0,
+    optimal_fiber_length: float = 0.1,
+    tendon_slack_length: float = 0.2,
+    pennation_angle_deg: float = 0.0,
+    via_points: Any = (),
+    muscle_class: str = "Millard2012EquilibriumMuscle",
+    reinitialize: bool = False,
 ) -> Any:
-    """Add an already-constructed muscle to the model.
+    """Build a muscle from its origin/insertion attachments and add it to the model.
 
-    A named alias of :func:`add_force`: a ``Muscle`` is a ``Force``
-    subtype in OpenSim and is stored in (and removed from) the same
-    ``ForceSet``.
+    A ``Muscle`` is a ``Force`` subtype in OpenSim and is stored in (and
+    removed from) the same ``ForceSet`` -- see :func:`add_force` for
+    adding any other kind of force/actuator, or any muscle type whose
+    constructor doesn't match ``muscle_class``'s assumed
+    ``(name, max_isometric_force, optimal_fiber_length,
+    tendon_slack_length, pennation_angle)`` shape.
 
     Parameters
     ----------
     model : OpenSimModel
         Model to add the muscle to.
-    muscle : opensim.Muscle
-        The already-constructed muscle, e.g. a
-        ``opensim.Millard2012EquilibriumMuscle`` with its path points
-        already set.
+    name : str
+        Name for the new muscle.
+    origin_component, insertion_component : opensim.PhysicalFrame
+        The body (or other physical frame) each end of the muscle's path
+        attaches to.
+    origin_position, insertion_position : tuple[float, float, float]
+        Attachment point, in metres, in the local frame of
+        ``origin_component``/``insertion_component`` respectively.
+    max_isometric_force : float, optional
+        Maximum isometric force, in newtons. Defaults to ``1000.0``.
+    optimal_fiber_length : float, optional
+        Optimal fiber length, in metres. Defaults to ``0.1``.
+    tendon_slack_length : float, optional
+        Tendon slack length, in metres. Defaults to ``0.2``.
+    pennation_angle_deg : float, optional
+        Pennation angle at optimal fiber length, in degrees (converted to
+        radians for the raw constructor, which takes radians). Defaults
+        to ``0.0``.
+    via_points : sequence of (component, (x, y, z)), optional
+        Extra path points inserted, in order, between the origin and
+        insertion attachments -- e.g. to wrap a muscle's path around a
+        joint. Empty by default (a straight origin-to-insertion path).
+    muscle_class : str, optional
+        Name of the ``opensim`` muscle class to instantiate (looked up on
+        ``model.opensim``, same resolution as the joint type -> class
+        lookup :func:`add_free_joint`/:func:`add_pin_joint`/etc. use).
+        Defaults to ``"Millard2012EquilibriumMuscle"``.
     reinitialize : bool, optional
         See :func:`add_component`.
 
     Returns
     -------
     components.Muscle
-        ``muscle``, wrapped, for chaining.
+        The newly created muscle, wrapped.
     """
-    muscle = _unwrap(muscle)
+    origin_component = _unwrap(origin_component)
+    insertion_component = _unwrap(insertion_component)
+    muscle_cls = getattr(model.opensim, muscle_class)
+    muscle = muscle_cls(
+        name,
+        float(max_isometric_force),
+        float(optimal_fiber_length),
+        float(tendon_slack_length),
+        float(np.deg2rad(pennation_angle_deg)),
+    )
+    muscle.addNewPathPoint(f"{name}-P1", origin_component, model.opensim.Vec3(*origin_position))
+    index = 2
+    for component, position in via_points:
+        muscle.addNewPathPoint(f"{name}-P{index}", _unwrap(component), model.opensim.Vec3(*position))
+        index += 1
+    muscle.addNewPathPoint(f"{name}-P{index}", insertion_component, model.opensim.Vec3(*insertion_position))
     add_component(model, "force", muscle, reinitialize=reinitialize)
     return components.Muscle(model, muscle)
 
@@ -1099,6 +1156,183 @@ def remove_constraint(
         See :func:`add_component`.
     """
     remove_component(model, "constraint", name, reinitialize=reinitialize)
+
+
+def add_weld_constraint(
+    model: "OpenSimModel",
+    name: str,
+    body1: Any,
+    body2: Any,
+    *,
+    position1: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    orientation1_deg: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    position2: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    orientation2_deg: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    reinitialize: bool = False,
+) -> Any:
+    """Rigidly weld ``body1`` and ``body2`` together (removes all 6 relative dof).
+
+    Builds an ``opensim.WeldConstraint`` from two attachment frames, one
+    per body -- unlike a ``WeldJoint`` (see :func:`add_weld_joint`), this
+    does not change the kinematic tree: both bodies keep their own
+    joints, and the constraint just forces their two attachment frames to
+    coincide.
+
+    Parameters
+    ----------
+    model : OpenSimModel
+        Model to add the constraint to.
+    name : str
+        Name for the new constraint.
+    body1, body2 : opensim.PhysicalFrame
+        The two bodies (or other physical frames) to weld together.
+    position1, orientation1_deg : tuple[float, float, float], optional
+        Attachment point/orientation (X-Y-Z body-fixed Euler degrees) on
+        ``body1``'s own frame. Defaults to no offset.
+    position2, orientation2_deg : tuple[float, float, float], optional
+        Same as ``position1``/``orientation1_deg``, but for ``body2``.
+    reinitialize : bool, optional
+        See :func:`add_component`.
+
+    Returns
+    -------
+    components.Constraint
+        The newly created constraint, wrapped.
+    """
+    body1 = _unwrap(body1)
+    body2 = _unwrap(body2)
+    constraint = model.opensim.WeldConstraint(
+        name,
+        body1,
+        model.opensim.Vec3(*position1),
+        model.opensim.Vec3(*np.deg2rad(orientation1_deg)),
+        body2,
+        model.opensim.Vec3(*position2),
+        model.opensim.Vec3(*np.deg2rad(orientation2_deg)),
+    )
+    add_component(model, "constraint", constraint, reinitialize=reinitialize)
+    return components.Constraint(model, constraint)
+
+
+def add_point_constraint(
+    model: "OpenSimModel",
+    name: str,
+    body1: Any,
+    position1: tuple[float, float, float],
+    body2: Any,
+    position2: tuple[float, float, float],
+    *,
+    reinitialize: bool = False,
+) -> Any:
+    """Constrain a point fixed on ``body1`` to coincide with a point fixed on ``body2``.
+
+    Builds an ``opensim.PointConstraint`` (removes 3 relative translational
+    dof, orientation stays free) -- use :func:`add_weld_constraint` instead
+    if orientation should be locked too.
+
+    Confirmed directly (OpenSim 4.6): a ``PointConstraint`` between two
+    *non-ground* bodies crashes the process natively during
+    ``initSystem()`` (not a catchable Python exception) -- regardless of
+    whether the two bodies are independent branches or parent/child in the
+    same chain. The identical construction with ``model.model.getGround()``
+    as one of the two bodies works correctly. Until this is resolved
+    upstream, treat ``add_point_constraint`` as ground-to-body only; for
+    body-to-body, use :func:`add_weld_constraint` instead (confirmed not to
+    have this issue), accepting the extra 3 locked rotational dof.
+
+    Parameters
+    ----------
+    model : OpenSimModel
+        Model to add the constraint to.
+    name : str
+        Name for the new constraint.
+    body1, body2 : opensim.PhysicalFrame
+        The two bodies (or other physical frames) whose points are
+        constrained to coincide.
+    position1 : tuple[float, float, float]
+        Point, in metres, in ``body1``'s own local frame.
+    position2 : tuple[float, float, float]
+        Point, in metres, in ``body2``'s own local frame.
+    reinitialize : bool, optional
+        See :func:`add_component`.
+
+    Returns
+    -------
+    components.Constraint
+        The newly created constraint, wrapped.
+    """
+    body1 = _unwrap(body1)
+    body2 = _unwrap(body2)
+    constraint = model.opensim.PointConstraint(
+        body1, model.opensim.Vec3(*position1), body2, model.opensim.Vec3(*position2)
+    )
+    constraint.setName(name)
+    add_component(model, "constraint", constraint, reinitialize=reinitialize)
+    return components.Constraint(model, constraint)
+
+
+def add_coordinate_coupler_constraint(
+    model: "OpenSimModel",
+    name: str,
+    independent_coordinates: Any,
+    dependent_coordinate: Any,
+    function: Any,
+    *,
+    reinitialize: bool = False,
+) -> Any:
+    """Couple ``dependent_coordinate``'s value to ``independent_coordinates`` via ``function``.
+
+    Builds an ``opensim.CoordinateCouplerConstraint``: whenever any
+    independent coordinate changes, OpenSim re-solves ``function`` of
+    their values and assigns the result to ``dependent_coordinate`` (e.g.
+    a patella coupled to knee flexion).
+
+    Parameters
+    ----------
+    model : OpenSimModel
+        Model to add the constraint to.
+    name : str
+        Name for the new constraint.
+    independent_coordinates : str, components.Coordinate, or a sequence of either
+        The coordinate(s) ``function`` is evaluated on. A single
+        coordinate (name or wrapper) is also accepted directly, not just
+        a sequence of one.
+    dependent_coordinate : str or components.Coordinate
+        The coordinate whose value ``function``'s result is assigned to.
+    function : opensim.Function
+        The already-built coupling function, e.g.
+        ``opensim.LinearFunction(slope, intercept)``. OpenSim has many
+        ``Function`` subtypes (linear, spline, constant, ...); building
+        one is left to the caller, same as :func:`add_force` leaves
+        building the force/actuator itself to the caller for anything
+        beyond a named muscle (:func:`add_muscle`).
+    reinitialize : bool, optional
+        See :func:`add_component`.
+
+    Returns
+    -------
+    components.Constraint
+        The newly created constraint, wrapped.
+    """
+    if isinstance(independent_coordinates, (str, components.Coordinate)):
+        independent_coordinates = [independent_coordinates]
+    names = model.opensim.ArrayStr()
+    for coordinate in independent_coordinates:
+        names.append(
+            coordinate.name if isinstance(coordinate, components.Coordinate) else coordinate
+        )
+    dependent_name = (
+        dependent_coordinate.name
+        if isinstance(dependent_coordinate, components.Coordinate)
+        else dependent_coordinate
+    )
+    constraint = model.opensim.CoordinateCouplerConstraint()
+    constraint.setName(name)
+    constraint.setIndependentCoordinateNames(names)
+    constraint.setDependentCoordinateName(dependent_name)
+    constraint.setFunction(function)
+    add_component(model, "constraint", constraint, reinitialize=reinitialize)
+    return components.Constraint(model, constraint)
 
 
 def add_controller(
@@ -1515,7 +1749,7 @@ def rotate_object(
     ``obj`` can be:
 
     - An entire :class:`~opensim_models.model.OpenSimModel` (or a
-      :class:`~opensim_models.models.User`/``Screen``): every joint of
+      :class:`~opensim_models.models.User`): every joint of
       ``obj`` that is itself attached to ground is rotated by the same
       amount, which rigidly rotates the whole model (preserving every
       internal/relative joint angle) -- see :func:`_rotate_whole_model`.
@@ -1717,7 +1951,7 @@ def translate_object(
     vector under a translation. ``obj`` can be:
 
     - An entire :class:`~opensim_models.model.OpenSimModel` (or a
-      :class:`~opensim_models.models.User`/``Screen``): every joint of
+      :class:`~opensim_models.models.User`): every joint of
       ``obj`` that is itself attached to ground is shifted by the same
       amount, which rigidly translates the whole model (preserving every
       internal/relative joint angle) -- see :func:`_translate_whole_model`.

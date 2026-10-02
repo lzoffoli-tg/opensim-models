@@ -59,7 +59,7 @@ from typing import Any
 
 from . import _geometry
 
-__all__ = ["VTKVisualizer", "DEFAULT_SIZE"]
+__all__ = ["VTKVisualizer", "DEFAULT_SIZE", "VIEW_NAMES"]
 
 #: Initial render window size in pixels, as (width, height). Exposed so
 #: :mod:`opensim_models._player` can size its viewer frame to match before
@@ -75,6 +75,31 @@ DEFAULT_SIZE = (900, 700)
 # reference without dominating the view for a human-scale (~1-2 m) model.
 _GROUND_HALF_SIZE = 5.0  # metres
 _GROUND_RESOLUTION = 10  # grid divisions per side
+
+# Muscle path lines and marker spheres, in the same (0.75, 0.76, 0.8)-grey
+# world as body geometry -- saturated colours so both stay readable against
+# bone-coloured actors and each other.
+_MUSCLE_COLOR = (0.75, 0.1, 0.1)
+_MUSCLE_RADIUS = 0.004  # metres; cosmetic tube thickness, not a real diameter
+_MARKER_COLOR = (1.0, 0.85, 0.0)
+_MARKER_RADIUS = 0.008  # metres
+
+# Axis-aligned preset camera views: (direction to place the camera from the
+# model's centre, in ground frame) -> view-up. Generic ground-frame axes,
+# not anatomical ones -- they happen to line up with a `User`'s own
+# forward(+X)/up(+Y)/right(+Z) convention since that is what the ground
+# frame is built against, but apply the same way to any model.
+_VIEW_DIRECTIONS: dict[str, tuple[tuple[float, float, float], tuple[float, float, float]]] = {
+    "front": ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+    "back": ((-1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+    "right": ((0.0, 0.0, 1.0), (0.0, 1.0, 0.0)),
+    "left": ((0.0, 0.0, -1.0), (0.0, 1.0, 0.0)),
+    "top": ((0.0, 1.0, 0.0), (0.0, 0.0, -1.0)),
+    "bottom": ((0.0, -1.0, 0.0), (0.0, 0.0, 1.0)),
+}
+
+#: Names accepted by :meth:`VTKVisualizer.set_view`, in a stable display order.
+VIEW_NAMES = ("front", "back", "left", "right", "top", "bottom")
 
 
 class VTKVisualizer:
@@ -145,7 +170,22 @@ class VTKVisualizer:
         self._hover_lock = threading.Lock()
         self._hover_text = ""
 
+        # (opensim.Muscle, vtkPolyDataMapper, vtkActor) triples -- unlike a
+        # body's fixed-shape mesh (just re-transformed in show()), a
+        # muscle's path can change point *count* with posture (wrapping
+        # points appearing/disappearing), so its mapper's input polydata is
+        # rebuilt from scratch every show() instead.
+        self._muscle_items: list[tuple[Any, Any, Any]] = []
+        # (opensim.Marker, vtkActor) pairs -- a sphere glyph repositioned
+        # (not reshaped) every show(), same idea as a body actor but
+        # position-only since a marker carries no orientation.
+        self._marker_items: list[tuple[Any, Any]] = []
+        self._muscles_visible = True
+        self._markers_visible = True
+
         self._build_actors()
+        self._build_muscle_actors()
+        self._build_marker_actors()
         self._interactor.AddObserver("MouseMoveEvent", self._on_mouse_move)
         self._interactor.AddObserver("LeaveEvent", self._on_mouse_leave)
         self._interactor.Initialize()
@@ -201,9 +241,12 @@ class VTKVisualizer:
         """Return whether the ground reference plane is currently shown."""
         return bool(self._ground_actor.GetVisibility())
 
+    def _model_display_name(self) -> str:
+        return self._model.model.getName() or type(self._model).__name__
+
     def _build_actors(self) -> None:
         opensim = self._model.opensim
-        model_name = self._model.model.getName() or type(self._model).__name__
+        model_name = self._model_display_name()
         body_set = self._model.model.getBodySet()
         for index in range(body_set.getSize()):
             body = body_set.get(index)
@@ -228,6 +271,130 @@ class VTKVisualizer:
             self._renderer.AddActor(actor)
             self._actor_bodies.append((body, actor))
             self._actor_components[actor] = (model_name, body.getName())
+
+    def _build_muscle_actors(self) -> None:
+        model_name = self._model_display_name()
+        muscles = self._model.model.getMuscles()
+        for index in range(muscles.getSize()):
+            muscle = muscles.get(index)
+            mapper = self._vtk.vtkPolyDataMapper()
+            actor = self._vtk.vtkActor()
+            actor.SetMapper(mapper)
+            actor.GetProperty().SetColor(*_MUSCLE_COLOR)
+            actor.SetVisibility(self._muscles_visible)
+            self._renderer.AddActor(actor)
+            self._muscle_items.append((muscle, mapper, actor))
+            self._actor_components[actor] = (model_name, muscle.getName())
+
+    def _build_marker_actors(self) -> None:
+        model_name = self._model_display_name()
+        marker_set = self._model.model.getMarkerSet()
+        sphere = self._vtk.vtkSphereSource()
+        sphere.SetRadius(_MARKER_RADIUS)
+        sphere.SetThetaResolution(12)
+        sphere.SetPhiResolution(12)
+        for index in range(marker_set.getSize()):
+            marker = marker_set.get(index)
+            mapper = self._vtk.vtkPolyDataMapper()
+            mapper.SetInputConnection(sphere.GetOutputPort())
+            actor = self._vtk.vtkActor()
+            actor.SetMapper(mapper)
+            actor.GetProperty().SetColor(*_MARKER_COLOR)
+            actor.SetVisibility(self._markers_visible)
+            self._renderer.AddActor(actor)
+            self._marker_items.append((marker, actor))
+            self._actor_components[actor] = (model_name, marker.getName())
+
+    def _update_muscle_actor(self, muscle: Any, mapper: Any, state: Any) -> None:
+        path = muscle.getGeometryPath().getCurrentPath(state)
+        count = path.getSize()
+        if count < 2:
+            mapper.SetInputConnection(None)
+            return
+        points = self._vtk.vtkPoints()
+        polyline = self._vtk.vtkPolyLine()
+        polyline.GetPointIds().SetNumberOfIds(count)
+        for index in range(count):
+            location = path.get(index).getLocationInGround(state)
+            points.InsertNextPoint(location.get(0), location.get(1), location.get(2))
+            polyline.GetPointIds().SetId(index, index)
+        lines = self._vtk.vtkCellArray()
+        lines.InsertNextCell(polyline)
+        polydata = self._vtk.vtkPolyData()
+        polydata.SetPoints(points)
+        polydata.SetLines(lines)
+        tube = self._vtk.vtkTubeFilter()
+        tube.SetInputData(polydata)
+        tube.SetRadius(_MUSCLE_RADIUS)
+        tube.SetNumberOfSides(8)
+        tube.CappingOn()
+        mapper.SetInputConnection(tube.GetOutputPort())
+
+    def set_muscles_visible(self, visible: bool) -> None:
+        """Show or hide every muscle path, and redraw."""
+        self._muscles_visible = bool(visible)
+        for _, _, actor in self._muscle_items:
+            actor.SetVisibility(self._muscles_visible)
+        self._render_window.Render()
+
+    def get_muscles_visible(self) -> bool:
+        """Return whether muscle paths are currently shown."""
+        return self._muscles_visible
+
+    def set_markers_visible(self, visible: bool) -> None:
+        """Show or hide every marker sphere, and redraw."""
+        self._markers_visible = bool(visible)
+        for _, actor in self._marker_items:
+            actor.SetVisibility(self._markers_visible)
+        self._render_window.Render()
+
+    def get_markers_visible(self) -> bool:
+        """Return whether marker spheres are currently shown."""
+        return self._markers_visible
+
+    def set_view(self, name: str) -> None:
+        """Point the camera at one of :data:`VIEW_NAMES`'s preset directions.
+
+        Reframes on the model's current visible bounds (so this works the
+        same regardless of what posture/zoom the camera was at before), but
+        does not change what is visible/hidden -- toggle
+        :meth:`set_ground_visible`/:meth:`set_muscles_visible`/
+        :meth:`set_markers_visible` first if those should be excluded from
+        the framing.
+
+        Raises
+        ------
+        ValueError
+            If ``name`` is not one of :data:`VIEW_NAMES`.
+        """
+        try:
+            direction, view_up = _VIEW_DIRECTIONS[name]
+        except KeyError:
+            raise ValueError(
+                f"Unknown view {name!r}; expected one of {VIEW_NAMES}"
+            ) from None
+        bounds = self._renderer.ComputeVisiblePropBounds()
+        center = (
+            (bounds[0] + bounds[1]) / 2.0,
+            (bounds[2] + bounds[3]) / 2.0,
+            (bounds[4] + bounds[5]) / 2.0,
+        )
+        diagonal = (
+            (bounds[1] - bounds[0]) ** 2
+            + (bounds[3] - bounds[2]) ** 2
+            + (bounds[5] - bounds[4]) ** 2
+        ) ** 0.5
+        distance = max(diagonal, 1.0) * 1.5
+        camera = self._renderer.GetActiveCamera()
+        camera.SetFocalPoint(*center)
+        camera.SetPosition(
+            center[0] + direction[0] * distance,
+            center[1] + direction[1] * distance,
+            center[2] + direction[2] * distance,
+        )
+        camera.SetViewUp(*view_up)
+        self._renderer.ResetCameraClippingRange()
+        self._render_window.Render()
 
     def _build_geometry_source(self, geometry: Any, opensim: Any) -> Any | None:
         """Return a VTK source/reader for one attached ``DecorativeGeometry``.
@@ -290,6 +457,11 @@ class VTKVisualizer:
                     matrix.SetElement(row, column, rotation_matrix.get(row, column))
                 matrix.SetElement(row, 3, position.get(row))
             actor.SetUserMatrix(matrix)
+        for muscle, mapper, _ in self._muscle_items:
+            self._update_muscle_actor(muscle, mapper, state)
+        for marker, actor in self._marker_items:
+            location = marker.getLocationInGround(state)
+            actor.SetPosition(location.get(0), location.get(1), location.get(2))
         self._render_window.Render()
 
     def process_events(self) -> None:

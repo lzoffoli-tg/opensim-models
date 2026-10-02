@@ -396,10 +396,9 @@ class PlayerWindow:
         background thread to stop, so code right after it that goes on to
         mutate ``model.model``/``model.state`` can otherwise race that
         thread's last tick, still reading them, before it notices the
-        signal (confirmed directly: :class:`~opensim_models.ensemble.OpenSimEnsemble`
-        rebuilding its combined model's components immediately after
-        ``close()`` -- instead of after this -- left the process unable to
-        exit afterward).
+        signal (confirmed directly: rebuilding a model's components
+        immediately after ``close()`` -- instead of after this -- left the
+        process unable to exit afterward).
 
         Parameters
         ----------
@@ -498,7 +497,7 @@ def start_player(
         import tkinter as tk
         from tkinter import ttk
 
-        from ._vtk_visualizer import DEFAULT_SIZE, VTKVisualizer
+        from ._vtk_visualizer import DEFAULT_SIZE, VIEW_NAMES, VTKVisualizer
 
         root = tk.Tk()
         root.title(model.model.getName() or "opensim-models")
@@ -592,17 +591,49 @@ def start_player(
         )
         ground_check.grid(row=2, column=5, padx=4, pady=(0, 8))
 
+        # Same deferred-read trick as ground_var above: these commands only
+        # touch model.visualizer once a click can actually happen.
+        muscles_var = tk.BooleanVar(value=True)
+
+        def do_toggle_muscles() -> None:
+            model.visualizer.set_muscles_visible(muscles_var.get())
+
+        muscles_check = ttk.Checkbutton(
+            controls_frame, text="Muscles", width=7, variable=muscles_var, command=do_toggle_muscles,
+        )
+        muscles_check.grid(row=3, column=0, padx=4, pady=(0, 4))
+
+        markers_var = tk.BooleanVar(value=True)
+
+        def do_toggle_markers() -> None:
+            model.visualizer.set_markers_visible(markers_var.get())
+
+        markers_check = ttk.Checkbutton(
+            controls_frame, text="Markers", width=7, variable=markers_var, command=do_toggle_markers,
+        )
+        markers_check.grid(row=3, column=1, padx=4, pady=(0, 4))
+
+        for column, view_name in enumerate(VIEW_NAMES):
+
+            def do_set_view(name: str = view_name) -> None:
+                model.visualizer.set_view(name)
+
+            view_button = ttk.Button(
+                controls_frame, text=view_name.capitalize(), width=7, command=do_set_view,
+            )
+            view_button.grid(row=4, column=column, padx=4, pady=(0, 8))
+
         playback_widgets = (slider, rew_button, play_button, stop_button, ff_button, cycle_check)
         if player is None:
             for widget in playback_widgets:
                 widget.config(state="disabled")
 
         separator = ttk.Separator(controls_frame, orient="horizontal")
-        separator.grid(row=3, column=0, columnspan=6, sticky="ew", pady=(4, 2))
+        separator.grid(row=5, column=0, columnspan=6, sticky="ew", pady=(4, 2))
         status_bar = tk.Label(
             controls_frame, textvariable=hover_var, anchor="w", bg="#222222", fg="white",
         )
-        status_bar.grid(row=4, column=0, columnspan=6, sticky="ew", padx=0, pady=(0, 0))
+        status_bar.grid(row=6, column=0, columnspan=6, sticky="ew", padx=0, pady=(0, 0))
 
         # winfo_id() alone realizes viewer_frame's native window without
         # pumping Tk's event queue, unlike update()/update_idletasks() --
@@ -701,8 +732,34 @@ def start_player(
         ready.set()
         root.mainloop()
 
-    threading.Thread(target=run, daemon=True).start()
-    ready.wait(timeout=10.0)
+    gui_thread = threading.Thread(target=run, daemon=True)
+    # Tell pydevd/debugpy (VS Code's debugger) not to suspend this thread
+    # when a breakpoint is hit elsewhere: without this, hitting a
+    # breakpoint on the caller's thread freezes this window's Tk/VTK
+    # message pump too (pydevd suspends every thread by default), which
+    # looks exactly like a hang/crash with no error. Harmless outside a
+    # debugger -- plain threading.Thread instances ignore unknown
+    # attributes.
+    gui_thread.pydev_do_not_trace = True
+    gui_thread.start()
+    # generous: construction (VTK window + actors + Tk widgets, all on the
+    # background thread this call is waiting on) can take far longer than
+    # it looks like it should under a line-tracing debugger (e.g. VS
+    # Code's debugpy with "justMyCode": false, which traces into this
+    # library's own code too, not just the caller's) -- a short timeout
+    # here previously meant silently returning a PlayerWindow around a
+    # visualizer that was still mid-construction on timeout, with no error
+    # at all, confirmed directly to look like a silent hang/freeze from
+    # the caller's side.
+    if not ready.wait(timeout=60.0):
+        raise RuntimeError(
+            "Timed out waiting for the 3D visualizer/playback window to "
+            "initialize (60s). If this is running under a debugger that "
+            "traces into library code (e.g. VS Code's debugpy with "
+            "\"justMyCode\": false), try disabling that for this run -- "
+            "line-by-line tracing of VTK/Tk's own setup code can slow it "
+            "down enough to hit this."
+        )
     if "error" in failure:
         raise RuntimeError(
             "Unable to open the 3D visualizer. Check that 'vtk' is "

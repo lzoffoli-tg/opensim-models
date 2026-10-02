@@ -942,12 +942,10 @@ class OpenSimModel:
         process with no mouse-position, camera-transform, or picking API
         exposed to Python at all.
 
-        To show several containers together, combine them into an
-        :class:`~opensim_models.ensemble.OpenSimEnsemble` first (``user +
-        screen``) and call ``show()`` on *that* -- it rebuilds a merged
-        model from each container's current state on every call, so a
-        change made to ``user``/``screen`` since the combination always
-        shows up. A plain ``OpenSimModel`` only ever shows itself.
+        To show several models together, merge them into one first
+        (``user + screen``, or ``self.add_model(other)`` to merge in
+        place) and call ``show()`` on the merged result -- a plain
+        ``OpenSimModel`` only ever shows itself.
 
         Parameters
         ----------
@@ -1397,16 +1395,47 @@ class OpenSimModel:
 
         return operators.add_force(self, force, reinitialize=reinitialize)
 
-    def add_muscle(self, muscle: Any, *, reinitialize: bool = False) -> "components.Muscle":
-        """Add an already-constructed muscle to this model.
+    def add_muscle(
+        self,
+        name: str,
+        origin_component: Any,
+        origin_position: tuple[float, float, float],
+        insertion_component: Any,
+        insertion_position: tuple[float, float, float],
+        *,
+        max_isometric_force: float = 1000.0,
+        optimal_fiber_length: float = 0.1,
+        tendon_slack_length: float = 0.2,
+        pennation_angle_deg: float = 0.0,
+        via_points: Any = (),
+        muscle_class: str = "Millard2012EquilibriumMuscle",
+        reinitialize: bool = False,
+    ) -> "components.Muscle":
+        """Build a muscle from its origin/insertion attachments and add it to this model.
 
-        A thin wrapper equivalent to ``operators.add_muscle(self, muscle,
-        ...)``: see :func:`~opensim_models.operators.add_muscle` for the
-        full semantics (imported locally, see :meth:`add_body`).
+        A thin wrapper equivalent to ``operators.add_muscle(self, name,
+        origin_component, origin_position, insertion_component,
+        insertion_position, ...)``: see
+        :func:`~opensim_models.operators.add_muscle` for the full
+        semantics (imported locally, see :meth:`add_body`).
         """
         from . import operators
 
-        return operators.add_muscle(self, muscle, reinitialize=reinitialize)
+        return operators.add_muscle(
+            self,
+            name,
+            origin_component,
+            origin_position,
+            insertion_component,
+            insertion_position,
+            max_isometric_force=max_isometric_force,
+            optimal_fiber_length=optimal_fiber_length,
+            tendon_slack_length=tendon_slack_length,
+            pennation_angle_deg=pennation_angle_deg,
+            via_points=via_points,
+            muscle_class=muscle_class,
+            reinitialize=reinitialize,
+        )
 
     def add_marker(self, marker: Any, *, reinitialize: bool = False) -> "components.Marker":
         """Add an already-constructed marker to this model.
@@ -1432,6 +1461,92 @@ class OpenSimModel:
         from . import operators
 
         return operators.add_constraint(self, constraint, reinitialize=reinitialize)
+
+    def add_weld_constraint(
+        self,
+        name: str,
+        body1: Any,
+        body2: Any,
+        *,
+        position1: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        orientation1_deg: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        position2: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        orientation2_deg: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        reinitialize: bool = False,
+    ) -> "components.Constraint":
+        """Rigidly weld ``body1`` and ``body2`` together (removes all 6 relative dof).
+
+        A thin wrapper equivalent to ``operators.add_weld_constraint(self,
+        name, body1, body2, ...)``: see
+        :func:`~opensim_models.operators.add_weld_constraint` for the full
+        semantics (imported locally, see :meth:`add_body`).
+        """
+        from . import operators
+
+        return operators.add_weld_constraint(
+            self,
+            name,
+            body1,
+            body2,
+            position1=position1,
+            orientation1_deg=orientation1_deg,
+            position2=position2,
+            orientation2_deg=orientation2_deg,
+            reinitialize=reinitialize,
+        )
+
+    def add_point_constraint(
+        self,
+        name: str,
+        body1: Any,
+        position1: tuple[float, float, float],
+        body2: Any,
+        position2: tuple[float, float, float],
+        *,
+        reinitialize: bool = False,
+    ) -> "components.Constraint":
+        """Constrain a point fixed on ``body1`` to coincide with a point fixed on ``body2``.
+
+        A thin wrapper equivalent to ``operators.add_point_constraint(self,
+        name, body1, position1, body2, position2, ...)``: see
+        :func:`~opensim_models.operators.add_point_constraint` for the full
+        semantics (imported locally, see :meth:`add_body`) -- including a
+        confirmed native-crash risk for a body-to-body (non-ground) pair;
+        use :meth:`add_weld_constraint` for that case instead.
+        """
+        from . import operators
+
+        return operators.add_point_constraint(
+            self, name, body1, position1, body2, position2, reinitialize=reinitialize
+        )
+
+    def add_coordinate_coupler_constraint(
+        self,
+        name: str,
+        independent_coordinates: Any,
+        dependent_coordinate: Any,
+        function: Any,
+        *,
+        reinitialize: bool = False,
+    ) -> "components.Constraint":
+        """Couple ``dependent_coordinate``'s value to ``independent_coordinates`` via ``function``.
+
+        A thin wrapper equivalent to
+        ``operators.add_coordinate_coupler_constraint(self, name,
+        independent_coordinates, dependent_coordinate, function, ...)``:
+        see :func:`~opensim_models.operators.add_coordinate_coupler_constraint`
+        for the full semantics (imported locally, see :meth:`add_body`).
+        """
+        from . import operators
+
+        return operators.add_coordinate_coupler_constraint(
+            self,
+            name,
+            independent_coordinates,
+            dependent_coordinate,
+            function,
+            reinitialize=reinitialize,
+        )
 
     def add_controller(
         self, controller: Any, *, reinitialize: bool = False
@@ -1474,50 +1589,165 @@ class OpenSimModel:
 
         return operators.add_probe(self, probe, reinitialize=reinitialize)
 
-    def __add__(self, other: "OpenSimModel | OpenSimEnsemble") -> "OpenSimEnsemble":
-        """Return an assembly (:class:`~opensim_models.ensemble.OpenSimEnsemble`)
-        containing both operands as separate containers.
+    def remove_body(self, name: str, *, reinitialize: bool = False) -> None:
+        """Remove a body from this model, by name.
 
-        Neither operand is modified, and neither is merged into a new
-        container -- ``self``/``other`` stay independently editable;
-        :meth:`~opensim_models.ensemble.OpenSimEnsemble.show`/``.export()``
-        build a merged model from their *current* state on demand instead.
-        For a permanent, in-place fuse of two containers into one, use
-        :meth:`add_model` directly. Chaining (``a + b + c``, where any
-        operand may already be an ``OpenSimEnsemble``) flattens into one
-        assembly rather than nesting.
+        A thin wrapper equivalent to ``operators.remove_body(self, name,
+        ...)``: see :func:`~opensim_models.operators.remove_body` for the
+        full semantics (imported locally, see :meth:`add_body`).
+        """
+        from . import operators
+
+        operators.remove_body(self, name, reinitialize=reinitialize)
+
+    def remove_joint(self, name: str, *, reinitialize: bool = False) -> None:
+        """Remove a joint from this model, by name (any joint type).
+
+        A thin wrapper equivalent to ``operators.remove_joint(self, name,
+        ...)``: see :func:`~opensim_models.operators.remove_joint` for the
+        full semantics (imported locally, see :meth:`add_body`).
+        """
+        from . import operators
+
+        operators.remove_joint(self, name, reinitialize=reinitialize)
+
+    def remove_force(self, name: str, *, reinitialize: bool = False) -> None:
+        """Remove a force/actuator from this model, by name (including a muscle).
+
+        A thin wrapper equivalent to ``operators.remove_force(self, name,
+        ...)``: see :func:`~opensim_models.operators.remove_force` for the
+        full semantics (imported locally, see :meth:`add_body`).
+        """
+        from . import operators
+
+        operators.remove_force(self, name, reinitialize=reinitialize)
+
+    def remove_muscle(self, name: str, *, reinitialize: bool = False) -> None:
+        """Remove a muscle from this model, by name.
+
+        A thin wrapper equivalent to ``operators.remove_muscle(self, name,
+        ...)``: see :func:`~opensim_models.operators.remove_muscle` for the
+        full semantics (imported locally, see :meth:`add_body`).
+        """
+        from . import operators
+
+        operators.remove_muscle(self, name, reinitialize=reinitialize)
+
+    def remove_marker(self, name: str, *, reinitialize: bool = False) -> None:
+        """Remove a marker from this model, by name.
+
+        A thin wrapper equivalent to ``operators.remove_marker(self, name,
+        ...)``: see :func:`~opensim_models.operators.remove_marker` for the
+        full semantics (imported locally, see :meth:`add_body`).
+        """
+        from . import operators
+
+        operators.remove_marker(self, name, reinitialize=reinitialize)
+
+    def remove_constraint(self, name: str, *, reinitialize: bool = False) -> None:
+        """Remove a constraint from this model, by name (any constraint type).
+
+        A thin wrapper equivalent to ``operators.remove_constraint(self,
+        name, ...)``: see
+        :func:`~opensim_models.operators.remove_constraint` for the full
+        semantics (imported locally, see :meth:`add_body`).
+        """
+        from . import operators
+
+        operators.remove_constraint(self, name, reinitialize=reinitialize)
+
+    def remove_controller(self, name: str, *, reinitialize: bool = False) -> None:
+        """Remove a controller from this model, by name.
+
+        A thin wrapper equivalent to ``operators.remove_controller(self,
+        name, ...)``: see
+        :func:`~opensim_models.operators.remove_controller` for the full
+        semantics (imported locally, see :meth:`add_body`).
+        """
+        from . import operators
+
+        operators.remove_controller(self, name, reinitialize=reinitialize)
+
+    def remove_contact_geometry(self, name: str, *, reinitialize: bool = False) -> None:
+        """Remove a contact geometry from this model, by name.
+
+        A thin wrapper equivalent to ``operators.remove_contact_geometry(self,
+        name, ...)``: see
+        :func:`~opensim_models.operators.remove_contact_geometry` for the
+        full semantics (imported locally, see :meth:`add_body`).
+        """
+        from . import operators
+
+        operators.remove_contact_geometry(self, name, reinitialize=reinitialize)
+
+    def remove_probe(self, name: str, *, reinitialize: bool = False) -> None:
+        """Remove a probe from this model, by name.
+
+        A thin wrapper equivalent to ``operators.remove_probe(self, name,
+        ...)``: see :func:`~opensim_models.operators.remove_probe` for the
+        full semantics (imported locally, see :meth:`add_body`).
+        """
+        from . import operators
+
+        operators.remove_probe(self, name, reinitialize=reinitialize)
+
+    def __add__(self, other: "OpenSimModel") -> "OpenSimModel":
+        """Return a new, generic ``OpenSimModel`` with both operands merged in.
+
+        ``other`` can be another ``OpenSimModel``, or a standalone
+        component with its own private container (e.g. a
+        :class:`~opensim_models.components.Box`/
+        :class:`~opensim_models.components.Screen` -- detected via its
+        ``_container`` attribute, so this works for any future standalone
+        component the same way, with no per-class special-casing). Built
+        via :meth:`add_model`, applied twice to a fresh ``OpenSimModel`` --
+        neither ``self`` nor ``other`` is modified. The result is always a
+        plain ``OpenSimModel``, never a subclass of either operand (e.g.
+        ``user_a + user_b`` is not a ``User``): a merged model can't
+        generally be relied on to satisfy a specific subclass's structural
+        assumptions. Chaining (``a + b + c``) merges all three, regardless
+        of grouping.
 
         Raises
         ------
         TypeError
-            If ``other`` is neither an ``OpenSimModel`` nor an
-            ``OpenSimEnsemble``.
+            If ``other`` is neither an ``OpenSimModel`` nor a standalone
+            component.
         """
-        from .ensemble import OpenSimEnsemble
-
-        if isinstance(other, OpenSimEnsemble):
-            return OpenSimEnsemble((self,) + other.containers)
-        if not isinstance(other, OpenSimModel):
+        container = getattr(other, "_container", None)
+        if isinstance(container, OpenSimModel):
+            other = container
+        elif not isinstance(other, OpenSimModel):
             raise TypeError(
-                f"other must be an OpenSimModel or OpenSimEnsemble, got {type(other).__name__!r}"
+                f"other must be an OpenSimModel or standalone component, "
+                f"got {type(other).__name__!r}"
             )
-        return OpenSimEnsemble((self, other))
+        result = OpenSimModel(model_path=None)
+        result.add_model(self)
+        result.add_model(other)
+        return result
 
-    def __radd__(self, other: "OpenSimModel | OpenSimEnsemble") -> "OpenSimEnsemble":
+    def __radd__(self, other: "OpenSimModel") -> "OpenSimModel":
         """Support ``other + self`` when ``other`` did not implement ``__add__``.
 
+        See :meth:`__add__` for what kinds of ``other`` are accepted (this
+        is simply its mirror image).
+
         Raises
         ------
         TypeError
-            If ``other`` is neither an ``OpenSimModel`` nor an
-            ``OpenSimEnsemble``.
+            If ``other`` is neither an ``OpenSimModel`` nor a standalone
+            component.
         """
-        from .ensemble import OpenSimEnsemble
-
-        if isinstance(other, OpenSimEnsemble):
-            return OpenSimEnsemble(other.containers + (self,))
-        if not isinstance(other, OpenSimModel):
+        container = getattr(other, "_container", None)
+        if isinstance(container, OpenSimModel):
+            other = container
+        elif not isinstance(other, OpenSimModel):
             raise TypeError(
-                f"other must be an OpenSimModel or OpenSimEnsemble, got {type(other).__name__!r}"
+                f"other must be an OpenSimModel or standalone component, "
+                f"got {type(other).__name__!r}"
             )
-        return OpenSimEnsemble((other, self))
+        result = OpenSimModel(model_path=None)
+        result.add_model(other)
+        result.add_model(self)
+        return result

@@ -8,7 +8,7 @@ and nothing about it documented in a way an IDE could show. Every class
 here wraps one such raw object instead, exposing only a small,
 consistently-named set of properties/``set_x()`` method pairs (never an
 ``@x.setter`` -- matching every other model class in this package, e.g.
-:class:`~opensim_models.models.box.Box`), with real docstrings.
+:class:`~opensim_models.components.Box`), with real docstrings.
 
 This wraps the categories :class:`~opensim_models.model.OpenSimModel`
 already directly touches -- the 8 ``_MERGE_SETS`` categories (body, joint,
@@ -31,7 +31,7 @@ from typing import Any
 
 import numpy as np
 
-from . import _geometry
+from .. import _geometry
 
 __all__ = [
     "Body",
@@ -164,7 +164,7 @@ class Body(_ComponentWrapper):
     def inclination(self) -> tuple[float, float, float]:
         """Orientation relative to ground, as X-Y-Z body-fixed Euler degrees.
 
-        Same convention as :attr:`opensim_models.models.box.Box.angle_deg`.
+        Same convention as :attr:`opensim_models.components.Box.angle_deg`.
         """
         self._owner.model.realizePosition(self._owner.state)
         rotation = self._raw.getRotationInGround(self._owner.state)
@@ -542,3 +542,12 @@ class Probe(_ComponentWrapper):
     A thin, intentionally minimal wrapper for now -- see the module
     docstring.
     """
+
+
+# Concrete standalone components -- a Body subclass bundling its own
+# private OpenSimModel, rather than a wrapper around a piece of someone
+# else's model (see each module's own docstring for why).
+from .box import Box
+from .screen import Screen
+
+__all__ += ["Box", "Screen"]

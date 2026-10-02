@@ -1,6 +1,7 @@
 """ergonomy module"""
 
-from .models import User, Screen
+from .components import Screen
+from .models import User
 
 __all__ = ["calculate_incidence_angle"]
 
