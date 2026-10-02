@@ -194,8 +194,10 @@ class OpenSimModel:
         self._geometry_dirs: list[Path] = []
         self._anchor_names: set[str] = set()
         self._merged: dict[int, list[tuple[str, str]]] = {}
+        self._source_models: tuple["OpenSimModel", ...] = ()
         self._visualizer: Any | None = None
         self._player: Any | None = None
+        self._player_window: Any | None = None
         _register_owner(self)
 
     def copy(self) -> "OpenSimModel":
@@ -223,8 +225,10 @@ class OpenSimModel:
         clone._geometry_dirs = list(self._geometry_dirs)
         clone._anchor_names = set(self._anchor_names)
         clone._merged = dict(self._merged)
+        clone._source_models = self._source_models
         clone._visualizer = None
         clone._player = None
+        clone._player_window = None
         _register_owner(clone)
         return clone
 
@@ -1066,6 +1070,7 @@ class OpenSimModel:
         pathlib.Path
             Path to the written file.
         """
+        self._resync_from_sources()
         self._sync_coordinate_defaults()
         destination = Path(model_path)
         self.model.printToXML(str(destination))
@@ -1143,78 +1148,94 @@ class OpenSimModel:
         loop: bool = False,
         fps: float = 30.0,
     ) -> None:
-        """Open a native Simbody window showing the current model state.
+        """Open an interactive VTK window showing the current model state.
 
-        The visualizer is initialized lazily. If enabling it requires a new
-        state, the current coordinate values are copied over so the posture
-        already set on this model is preserved.
+        Each call closes and replaces any window(s) this instance already
+        has open, then opens fresh ones -- so the current posture/motion is
+        always exactly what's showing, but a reference to a previous
+        :attr:`visualizer`/:attr:`player` is no longer live after a second
+        ``show()`` call.
+
+        Opens a single window: the 3D view in its upper area (on Windows,
+        embedded directly into it; on other platforms the 3D view opens as
+        its own separate window instead, since embedding relies on a
+        Win32-specific reparenting call) with playback controls and a
+        status bar below -- see :func:`~opensim_models._player.start_player`
+        for exactly what it shows and its threading caveats. The status
+        bar live-updates with ``"<model>-<component> (x, y, z)"`` for
+        whatever the mouse is currently over in the 3D view, real
+        OpenSim/ground-frame coordinates -- not available from a window
+        showing only static geometry, which is the reason this package
+        renders its own 3D view with VTK instead of delegating to
+        OpenSim's native (Simbody) visualizer: that one runs as a separate
+        process with no mouse-position, camera-transform, or picking API
+        exposed to Python at all.
+
+        If this model was built by combining others (``full = user +
+        screen``), its components are freshly resynced from each one's
+        *current* state first -- see :attr:`models` -- so a change made to
+        ``user``/``screen`` since the combination (or since the last
+        ``show()``) always shows up here.
 
         Parameters
         ----------
         geometry_path : str, pathlib.Path or None, optional
             Extra geometry search directory, in addition to any registered
-            via :meth:`add_geometry_directory`.
+            via :meth:`add_geometry_directory` (registered the same way,
+            so it also benefits :meth:`export`).
         motion : str, pathlib.Path, opensim.TimeSeriesTable, or None, optional
             A motion to animate: a motion file path (``.mot``/``.sto``), or
             an already-loaded/built ``opensim.TimeSeriesTable`` (e.g. one
-            written by a prior analysis). When given, also opens a small Tk
-            playback control window (play/pause, stop, fast-forward,
-            fast-backward, a loop/cycle toggle, and a draggable progress
-            slider) alongside the visualizer -- see
-            :func:`~opensim_models._player.start_player` for exactly what
-            it drives and its threading caveats. Defaults to ``None`` (no
-            playback controls, just the current static posture, as before
-            this parameter existed).
+            written by a prior analysis). The playback window (see above)
+            always opens either way; without a motion its playback controls
+            (play/pause, stop, fast-forward/backward, cycle, the progress
+            slider) are simply shown disabled, since there is nothing to
+            play -- only the status bar is live. Defaults to ``None``.
         loop : bool, optional
             Initial state of the playback window's cycle/loop toggle.
             Ignored if ``motion`` is ``None``. Defaults to ``False``.
         fps : float, optional
-            Target refresh rate for advancing playback and redrawing the
-            visualizer, in frames per second. Ignored if ``motion`` is
-            ``None``. Defaults to ``30.0``.
+            Target refresh rate for advancing playback, refreshing the
+            status bar, and redrawing the visualizer, in frames per
+            second. Defaults to ``30.0``.
 
         Raises
         ------
         RuntimeError
-            If OpenSim cannot create or expose its visualizer.
+            If the 3D visualizer cannot be created (e.g. ``vtk`` is not
+            installed, or no graphical backend is available).
         ValueError
-            If ``motion`` resolves to fewer than 2 rows or a non-increasing
-            time column.
+            If ``motion`` resolves to fewer than 2 rows.
         """
+        self._resync_from_sources()
+        if geometry_path is not None:
+            self.add_geometry_directory(geometry_path)
+
         coordinates = self._capture_coordinate_values()
-        self.model.setUseVisualizer(True)
-        try:
-            self.state = self.model.initSystem()
-            self._visualizer = self.model.getVisualizer()
-            search_dirs = (
-                *self._geometry_dirs,
-                *([Path(geometry_path)] if geometry_path else []),
-            )
-            for directory in search_dirs:
-                self._visualizer.addDirToGeometrySearchPaths(
-                    str(Path(directory).resolve())
-                )
-            self._restore_coordinate_values(coordinates)
-            self._visualizer.show(self.state)
-        except Exception as error:
-            raise RuntimeError(
-                "Unable to open the OpenSim visualizer. Check the graphical "
-                "backend and the model geometry files. On Windows, this can "
-                "also happen if the active environment's 'Library/bin' "
-                "directory (containing the Simbody/OpenGL DLLs) is missing "
-                "from PATH."
-            ) from error
+        self.state = self.model.initSystem()
+        self._restore_coordinate_values(coordinates)
 
-        if motion is not None:
-            from ._player import start_player
+        if self._player_window is not None:
+            self._player_window.close()
+            self._player_window = None
+            self._player = None
+        if self._visualizer is not None:
+            self._visualizer.close()
+            self._visualizer = None
 
-            self._player = start_player(self, motion, loop=loop, fps=fps)
+        from ._player import start_player
+
+        # start_player itself constructs the VTKVisualizer, on the same
+        # background thread that then owns/pumps its native window for
+        # the rest of its life -- see that module's docstring for why.
+        self._player_window = start_player(self, motion, loop=loop, fps=fps)
+        self._player = self._player_window.motion_player
 
     @property
     def player(self) -> Any | None:
-        """Return the playback state machine started by the last ``show(motion=...)`` call.
+        """Return the playback state machine for the current ``show(motion=...)`` call.
 
-        ``None`` if :meth:`show` was never called with a ``motion``.
+        ``None`` if the last :meth:`show` call had no ``motion``.
         """
         return self._player
 
@@ -1237,6 +1258,40 @@ class OpenSimModel:
             if not coordinate.get_locked():
                 coordinate.setValue(self.state, value, False)
         self.model.realizePosition(self.state)
+
+    @property
+    def models(self) -> tuple["OpenSimModel", ...]:
+        """Return the models combined (via ``+``) into this one, in combination order.
+
+        ``(self,)`` if this model was not built by combining others (every
+        model has a non-empty ``models``, itself included, rather than an
+        empty tuple meaning "no sources"). A later change to one of these
+        -- ``user.rotate(...)``, ``screen.set_angle_deg(...)``, etc. -- is
+        reflected here automatically next time this model is shown
+        (:meth:`show`) or exported (:meth:`export`): both resync this
+        model's components from :attr:`models`'s *current* state first.
+        """
+        return self._source_models or (self,)
+
+    def _resync_from_sources(self) -> None:
+        """Rebuild this model's components from :attr:`models`'s current state.
+
+        A no-op if this model was not built by combining others (see
+        :attr:`models`). Reuses :meth:`add_model`'s own merge semantics
+        (automatic renaming on collision, shared ground), applied fresh
+        each time rather than once at ``+`` time, which is what lets a
+        later change to a source model show up here.
+        """
+        if not self._source_models:
+            return
+        self.model = self.opensim.Model()
+        self._unlock_coordinates()
+        self.state = self.model.initSystem()
+        self._geometry_dirs = []
+        self._anchor_names = set()
+        self._merged = {}
+        for source in self._source_models:
+            self.add_model(source)
 
     def add_model(self, other: "OpenSimModel", *, name: str | None = None) -> None:
         """Merge another model's components into this one, in place.
@@ -1404,6 +1459,10 @@ class OpenSimModel:
 
         Neither operand is modified; see :meth:`add_model` for the merge
         semantics (automatic renaming on collision, shared ground).
+        :attr:`models` on the result is ``self.models + other.models``
+        (flattened, so chaining ``a + b + c`` gives ``(a, b, c)`` rather
+        than nesting), and a later change to any of them is reflected the
+        next time the result is shown or exported -- see :attr:`models`.
 
         Raises
         ------
@@ -1415,8 +1474,8 @@ class OpenSimModel:
                 f"other must be an OpenSimModel, got {type(other).__name__!r}"
             )
         combined = OpenSimModel(model_path=None)
-        combined.add_model(self)
-        combined.add_model(other)
+        combined._source_models = self.models + other.models
+        combined._resync_from_sources()
         return combined
 
     def __radd__(self, other: "OpenSimModel") -> "OpenSimModel":

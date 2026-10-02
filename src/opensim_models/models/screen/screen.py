@@ -276,6 +276,7 @@ class Screen(OpenSimModel):
         _write_box_mesh(mesh_path, width_mm, height_mm, _THICKNESS_MM)
 
         self.model = self.opensim.Model()
+        self.model.setName("Screen")
         body = self.opensim.Body(
             "screen_panel",
             mass,

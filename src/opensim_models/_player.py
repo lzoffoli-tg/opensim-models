@@ -1,35 +1,71 @@
-"""Playback controls for a motion, driving an ``OpenSimModel``'s visualizer.
+"""The unified viewer+playback window for an ``OpenSimModel``.
 
-Used by :meth:`~opensim_models.model.OpenSimModel.show` when given a
-``motion``: opens a small Tk control window (play/pause, stop, fast-forward,
-fast-backward, a loop/cycle toggle, and a draggable progress slider)
-alongside the native Simbody visualizer window, and drives that visualizer
-by repeatedly calling ``ModelVisualizer.show(state)`` as playback advances.
+Used by :meth:`~opensim_models.model.OpenSimModel.show`: opens a single Tk
+window embedding the (VTK-based, see :mod:`opensim_models._vtk_visualizer`)
+3D view in its upper area, with two parts below it:
 
-A companion Tk window, rather than widgets added directly to the native
-Simbody visualizer: that visualizer's own interactive widgets
-(``Visualizer.addSlider``/``addMenu``/``setWindowTitle`` -- anything taking
-a ``SimTK::String``) are not callable from Python on at least some current
-OpenSim builds. Passing a plain ``str`` raises ``TypeError: ... argument
-... of type 'String const &'`` regardless of what is actually passed or in
-what order -- a native-binding limitation of the installed OpenSim
-package, unrelated to this one, confirmed to affect even the unrelated
-``setWindowTitle``. A separate Tk window sidesteps it entirely, while still
-driving the same visualizer through ``ModelVisualizer.show(state)``, which
-takes no ``SimTK::String`` and is already used by ``OpenSimModel.show``.
+- Playback controls (play/pause, stop, fast-forward, fast-backward, a
+  loop/cycle toggle, and a draggable progress slider) driving a motion
+  loaded via ``show(motion=...)`` -- disabled whenever no motion is
+  loaded, rather than the controls disappearing, so there is always
+  somewhere to look for them.
+- A ground reference plane toggle, next to the loop/cycle one -- unlike
+  the playback controls, never disabled, since it controls the 3D view
+  itself rather than anything about a loaded motion.
+- A bottom status bar showing live hover info from the visualizer
+  (``"<model>-<component> (x, y, z)"``), regardless of whether a motion
+  is loaded.
+
+This used to be two separate windows (the native 3D view plus a Tk window
+kept docked under it), from when this project drove the *native* Simbody
+visualizer (a separate process) and the only way to add playback/status
+chrome to it at all was a second, independent window -- Simbody's own
+widget API (``Visualizer.addSlider``/``addMenu``/``setWindowTitle`` --
+anything taking a ``SimTK::String``) is not callable from Python on at
+least some OpenSim builds. The visualizer is no longer Simbody's, and
+runs in this same process now, so its native window is instead reparented
+(Windows only -- see ``_embed_visualizer_window``) directly into a frame
+inside this one Tk window: one window, no inter-window docking to keep
+in sync.
+
+Embedding was briefly suspected of corrupting VTK's OpenGL context (a
+blank window, logging ``wglMakeCurrent failed ... resource is in use``)
+and reverted to the two-window design once -- that diagnosis was wrong.
+The window was never blank: its actors had no material colour set, so
+VTK's default (plain white) rendered indistinguishably from the
+near-white background underneath real geometry that was there all along,
+proven by sampling actual pixel values on and off the actor rather than
+eyeballing a screenshot. :meth:`~opensim_models._vtk_visualizer.VTKVisualizer._add_body_actors`
+now sets an explicit colour for exactly this reason. The
+``wglMakeCurrent`` log lines turned out to be unrelated, triggered by
+*this project's own test scripts* calling VTK interactor methods directly
+from a thread other than the one that created the window while chasing
+the (nonexistent) embedding bug -- not something a real caller, driving
+input through the OS's normal per-thread message dispatch, would ever
+hit.
+
+This module's ``start_player`` still constructs ``model``'s
+:class:`~opensim_models._vtk_visualizer.VTKVisualizer` itself (setting
+:attr:`~opensim_models.model.OpenSimModel.visualizer`), on the same
+background thread that runs this window and calls
+:meth:`~opensim_models._vtk_visualizer.VTKVisualizer.process_events`
+every tick: a Win32 window's messages are only ever delivered to the
+thread that created it, so both the embedding reparent call and every
+later ``process_events()`` pump need to happen on that same thread.
 """
 
 from __future__ import annotations
 
+import re
 import sys
 import threading
 import time as _time
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any
 
 import numpy as np
 
-__all__ = ["MotionData", "MotionPlayer", "start_player"]
+__all__ = ["MotionData", "MotionPlayer", "PlayerWindow", "start_player"]
 
 # Ordered, signed multiples of real time used by fast-forward/fast-backward:
 # repeatedly clicking one steps outward (slower -> faster) in that
@@ -40,6 +76,8 @@ _NEUTRAL_SPEED_INDEX = _SPEED_STEPS.index(1.0)
 # OpenSim's own Coordinate::MotionType C++ enum (Rotational=1): not exposed
 # as a named constant through these Python bindings, so used as a literal.
 _ROTATIONAL_MOTION_TYPE = 1
+
+_NO_MOTION_TEXT = "(nessuna animazione)"
 
 
 class MotionData:
@@ -230,190 +268,81 @@ class MotionPlayer:
 
 
 # ---------------------------------------------------------------------------
-# Docking the control window under the native Simbody visualizer window
+# Embedding the visualizer's native window into a Tk frame (Windows only)
 # ---------------------------------------------------------------------------
 #
-# Windows-only: the Simbody visualizer is a separate native window owned by
-# a different process (a bundled "simbody-visualizer" executable) -- not
-# something Tk or OpenSim's own Python API can query or reposition.
-# ctypes + the raw Win32 API is the only way to find and track it; there is
-# no equivalent on other platforms, so docking is simply unavailable there
-# and the control window is left wherever Tk places it by default.
+# Windows-only: reparenting an arbitrary native window by handle is a
+# Win32-specific operation; there is no equivalent here for other
+# platforms, so there the visualizer keeps its own separate top-level
+# window instead (still fully functional, just not embedded).
+#
+# VTK's own `SetParentId` (create the render window as a child to begin
+# with) was tried first and rejected: it fails outright on this VTK build
+# (`vtkWin32OpenGLRenderWindow`, error 1400/ERROR_INVALID_WINDOW_HANDLE,
+# confirmed by direct testing, both via the SWIG-encoded pointer string and
+# a `ctypes.c_void_p`). Reparenting the already-created top-level window
+# after the fact -- strip its WS_POPUP/title-bar styles, `SetParent` it
+# under the Tk frame, `MoveWindow` it to fill that frame -- works reliably
+# and is the standard Win32 technique for embedding a foreign window.
 
 _IS_WINDOWS = sys.platform.startswith("win")
-_PLAYER_HEIGHT = 130  # px; the control window's fixed height
+
+_VTK_WINDOW_ID_PATTERN = re.compile(r"_([0-9a-fA-F]+)_p_void")
 
 
-class _Rect(NamedTuple):
-    x: int
-    y: int
-    width: int
-    height: int
+def _hwnd_from_vtk_window_id(window_id: Any) -> int:
+    """Convert ``VTKVisualizer.get_window_id()``'s SWIG pointer encoding to a plain int HWND."""
+    match = _VTK_WINDOW_ID_PATTERN.match(str(window_id))
+    if match is None:
+        raise ValueError(f"Unrecognized VTK window id format: {window_id!r}")
+    return int(match.group(1), 16)
 
 
 if _IS_WINDOWS:
     import ctypes
-    from ctypes import wintypes
 
     _user32 = ctypes.windll.user32
-    _GA_ROOT = 2  # GetAncestor flag: the root owner window
 
-    class _WinRect(ctypes.Structure):
-        _fields_ = [
-            ("left", ctypes.c_long),
-            ("top", ctypes.c_long),
-            ("right", ctypes.c_long),
-            ("bottom", ctypes.c_long),
-        ]
+    _GWL_STYLE = -16
+    _WS_CHILD = 0x40000000
+    _WS_VISIBLE = 0x10000000
+    _WS_CLIPSIBLINGS = 0x04000000
+    _WS_CLIPCHILDREN = 0x02000000
+    _WS_POPUP = 0x80000000
+    _WS_CAPTION = 0x00C00000
+    _WS_THICKFRAME = 0x00040000
+    _WS_SYSMENU = 0x00080000
+    _SWP_NOMOVE = 0x0002
+    _SWP_NOSIZE = 0x0001
+    _SWP_NOZORDER = 0x0004
+    _SWP_FRAMECHANGED = 0x0020
+    _SW_HIDE = 0
 
-    _WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+    def _embed_visualizer_window(hwnd: int, parent_hwnd: int) -> None:
+        """Reparent the visualizer's top-level ``hwnd`` into ``parent_hwnd``, filling it.
 
-    def _find_visualizer_window() -> int | None:
-        """Find the Simbody visualizer's native window handle, if one is open.
-
-        Matched by window class (FreeGLUT windows are always class
-        ``"GLUT"``) and title prefix (OpenSim's ``ModelVisualizer`` titles
-        it ``"OpenSim <version>: ..."`` -- the rest varies by version and
-        model, so only that stable prefix is matched). When several such
-        windows are open at once (more than one model shown), the
-        foreground one is preferred, since showing/raising a visualizer
-        brings it to the front; this cannot otherwise tell which
-        visualizer belongs to which `OpenSimModel`, since the Python API
-        does not expose the native window handle or the underlying
-        subprocess's id directly.
+        Hides ``hwnd`` first as cheap insurance against it painting a
+        frame as a top-level window before this call lands (it is called
+        right after that window is created, before its first paint, so in
+        practice there is nothing to hide yet). Sets
+        ``WS_CLIPCHILDREN``/``WS_CLIPSIBLINGS`` alongside ``WS_CHILD``,
+        per Microsoft's own documented rules for any window used for
+        OpenGL rendering: the *top-level* window this used to be had no
+        siblings/children for clipping to matter for, so it never needed
+        them until now.
         """
-        candidates: list[int] = []
+        _user32.ShowWindow(hwnd, _SW_HIDE)
+        style = _user32.GetWindowLongPtrW(hwnd, _GWL_STYLE)
+        style &= ~(_WS_POPUP | _WS_CAPTION | _WS_THICKFRAME | _WS_SYSMENU)
+        style |= _WS_CHILD | _WS_VISIBLE | _WS_CLIPSIBLINGS | _WS_CLIPCHILDREN
+        _user32.SetWindowLongPtrW(hwnd, _GWL_STYLE, style)
+        _user32.SetParent(hwnd, parent_hwnd)
+        _user32.SetWindowPos(
+            hwnd, None, 0, 0, 0, 0, _SWP_FRAMECHANGED | _SWP_NOMOVE | _SWP_NOSIZE | _SWP_NOZORDER
+        )
 
-        def callback(hwnd: int, _lparam: int) -> bool:
-            if not _user32.IsWindowVisible(hwnd):
-                return True
-            length = _user32.GetWindowTextLengthW(hwnd)
-            if length == 0:
-                return True
-            title = ctypes.create_unicode_buffer(length + 1)
-            _user32.GetWindowTextW(hwnd, title, length + 1)
-            if not title.value.startswith("OpenSim"):
-                return True
-            class_name = ctypes.create_unicode_buffer(64)
-            _user32.GetClassNameW(hwnd, class_name, 64)
-            if class_name.value == "GLUT":
-                candidates.append(hwnd)
-            return True
-
-        _user32.EnumWindows(_WNDENUMPROC(callback), 0)
-        if not candidates:
-            return None
-        foreground = _user32.GetForegroundWindow()
-        return foreground if foreground in candidates else candidates[-1]
-
-    def _get_window_rect(hwnd: int) -> _Rect:
-        rect = _WinRect()
-        _user32.GetWindowRect(hwnd, ctypes.byref(rect))
-        return _Rect(rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top)
-
-    def _move_window(hwnd: int, rect: _Rect) -> None:
-        _user32.MoveWindow(hwnd, rect.x, rect.y, rect.width, rect.height, True)
-
-    def _top_level_hwnd(root: Any) -> int:
-        """Return the real, OS-decorated top-level window handle for ``root``.
-
-        ``root.winfo_id()`` is a *child* window sized to the Tk content
-        area (its own ``MoveWindow`` coordinates are relative to that
-        parent, not the screen), not the outer window ``EnumWindows``
-        would find -- walk up to the actual root via ``GetAncestor``.
-        """
-        return _user32.GetAncestor(root.winfo_id(), _GA_ROOT)
-
-    def _measure_window_borders(root: Any, top_hwnd: int) -> tuple[int, int]:
-        """Return the (width, height) overhead of the OS window chrome.
-
-        ``root.geometry("WxH+X+Y")``'s ``W``/``H`` set the Tk *content*
-        area, matching ``root.winfo_width()``/``winfo_height()``, but
-        ``GetWindowRect`` (used to match the visualizer's size) reports
-        the *outer* window, border/title bar included -- compare the two,
-        measured at the same instant, to get that fixed, style-dependent
-        overhead once, then compensate every subsequent ``geometry()``
-        call with it so the two stay pixel-for-pixel aligned.
-        """
-        outer = _get_window_rect(top_hwnd)
-        return (outer.width - root.winfo_width(), outer.height - root.winfo_height())
-
-
-def _get_tk_window_rect(root: Any) -> _Rect:
-    return _Rect(root.winfo_x(), root.winfo_y(), root.winfo_width(), root.winfo_height())
-
-
-def _dock_player_window(root: Any, visualizer_rect: _Rect, borders: tuple[int, int]) -> None:
-    """Position/size ``root`` directly below ``visualizer_rect``, matching its width.
-
-    A single rule, not a special case for "full screen": when the
-    visualizer spans the whole screen, its own width already equals the
-    screen's, so the control window ends up spanning it too.
-    """
-    border_width, border_height = borders
-    root.geometry(
-        f"{visualizer_rect.width - border_width}x{_PLAYER_HEIGHT - border_height}"
-        f"+{visualizer_rect.x}+{visualizer_rect.y + visualizer_rect.height}"
-    )
-
-
-class _DockingTracker:
-    """Keeps the control window docked under the visualizer window (Windows only).
-
-    Call :meth:`sync` once per tick. Moving/resizing the visualizer
-    re-docks the control window under it, matching its width; dragging the
-    control window instead moves the visualizer by the same delta (so it
-    stays docked below it either way) -- this only tracks *position*
-    changes on the control window's side, never its size, since that is
-    always fully driven by the visualizer (and the window is built
-    non-resizable to begin with).
-    """
-
-    def __init__(self) -> None:
-        self._hwnd: int | None = None
-        self._borders: tuple[int, int] | None = None
-        self._last_visualizer_rect: _Rect | None = None
-        self._last_player_rect: _Rect | None = None
-
-    def sync(self, root: Any) -> None:
-        if not _IS_WINDOWS:
-            return
-
-        if self._borders is None:
-            self._borders = _measure_window_borders(root, _top_level_hwnd(root))
-
-        if self._hwnd is None or not _user32.IsWindow(self._hwnd):
-            self._hwnd = _find_visualizer_window()
-            if self._hwnd is None:
-                return
-            _dock_player_window(root, _get_window_rect(self._hwnd), self._borders)
-            root.update_idletasks()
-            self._last_visualizer_rect = _get_window_rect(self._hwnd)
-            self._last_player_rect = _get_tk_window_rect(root)
-            return
-
-        visualizer_rect = _get_window_rect(self._hwnd)
-        player_rect = _get_tk_window_rect(root)
-
-        if visualizer_rect != self._last_visualizer_rect:
-            _dock_player_window(root, visualizer_rect, self._borders)
-        elif (player_rect.x, player_rect.y) != (
-            self._last_player_rect.x,
-            self._last_player_rect.y,
-        ):
-            moved_rect = _Rect(
-                visualizer_rect.x + (player_rect.x - self._last_player_rect.x),
-                visualizer_rect.y + (player_rect.y - self._last_player_rect.y),
-                visualizer_rect.width,
-                visualizer_rect.height,
-            )
-            _move_window(self._hwnd, moved_rect)
-            visualizer_rect = moved_rect
-            _dock_player_window(root, visualizer_rect, self._borders)
-
-        root.update_idletasks()
-        self._last_visualizer_rect = visualizer_rect
-        self._last_player_rect = _get_tk_window_rect(root)
+    def _resize_embedded_window(hwnd: int, width: int, height: int) -> None:
+        _user32.MoveWindow(hwnd, 0, 0, width, height, True)
 
 
 def _apply_time(model: "OpenSimModel", data: MotionData, time: float) -> None:
@@ -428,96 +357,156 @@ def _apply_time(model: "OpenSimModel", data: MotionData, time: float) -> None:
     model.visualizer.show(model.state)
 
 
-def start_player(
-    model: "OpenSimModel", motion: Any, *, loop: bool = False, fps: float = 30.0
-) -> MotionPlayer:
-    """Open a Tk playback control window driving ``model``'s visualizer.
+class PlayerWindow:
+    """Handle to a running playback/status window (see :func:`start_player`).
 
-    Requires :meth:`~opensim_models.model.OpenSimModel.show` to have been
-    called already (``model.visualizer`` must be available). Runs its own
-    ``Tk`` event loop on a background daemon thread, so this returns
-    immediately; the window (and the background thread driving it) closes
-    on its own when the user closes it. Only that background thread should
-    touch ``model`` (its ``state``, coordinates, visualizer) while the
-    player window is open -- OpenSim's ``State``/``Model`` are not
-    thread-safe, so driving the same model concurrently from the caller's
-    own thread is not safe.
+    Attributes
+    ----------
+    motion_player : MotionPlayer or None
+        The playback state machine, if a motion was loaded; ``None`` if
+        the window was opened without one (controls shown disabled).
+    """
+
+    def __init__(self, motion_player: MotionPlayer | None, stop_event: threading.Event) -> None:
+        self.motion_player = motion_player
+        self._stop_event = stop_event
+
+    def close(self) -> None:
+        """Close the window and stop its background thread.
+
+        Safe to call from any thread; idempotent. The window closes on
+        its own next tick (at most one frame interval later), since
+        Tk widgets may only safely be touched from the thread running
+        their own ``mainloop``.
+        """
+        self._stop_event.set()
+
+
+def start_player(
+    model: "OpenSimModel", motion: Any = None, *, loop: bool = False, fps: float = 30.0
+) -> PlayerWindow:
+    """Open the unified viewer+playback window for ``model``.
+
+    Also constructs ``model``'s :class:`~opensim_models._vtk_visualizer.VTKVisualizer`
+    (setting :attr:`~opensim_models.model.OpenSimModel.visualizer`) -- on
+    the same background thread this starts for the window itself, rather
+    than on the caller's thread, so that one thread both creates the VTK
+    window and is the one later embedding/resizing/pumping it. A Win32
+    window may only safely be manipulated by the thread that created it;
+    constructing it here instead of in :meth:`~opensim_models.model.OpenSimModel.show`
+    avoids a cross-thread deadlock in the embedding step confirmed by
+    direct testing (``SetParent``/``ShowWindow`` block forever waiting for
+    the *creating* thread to pump messages it was never going to pump,
+    since that thread -- the caller's -- had already moved on).
+
+    Runs its own ``Tk`` event loop on that same background daemon thread,
+    so this call returns once that window is up (or construction failed);
+    call :meth:`PlayerWindow.close` to shut it down (e.g. before opening a
+    new one for the same model). Only that background thread should touch
+    ``model`` (its ``state``, coordinates, visualizer) while the window is
+    open -- OpenSim's ``State``/``Model`` are not thread-safe, so driving
+    the same model concurrently from the caller's own thread is not safe.
 
     Parameters
     ----------
     model : OpenSimModel
-        Model to animate; must already have an open visualizer (see
-        :meth:`~opensim_models.model.OpenSimModel.show`).
-    motion : str, pathlib.Path, or opensim.TimeSeriesTable
+        Model to show/animate; any previous :attr:`~opensim_models.model.OpenSimModel.visualizer`
+        should already be closed (see :meth:`~opensim_models.model.OpenSimModel.show`).
+    motion : str, pathlib.Path, opensim.TimeSeriesTable, or None, optional
         A motion file path (``.mot``/``.sto``), or an already-loaded/built
         table (e.g. one written by a prior analysis) -- see
-        :class:`MotionData`.
+        :class:`MotionData`. When ``None`` (default), the window still
+        opens (with its status bar live), but the playback controls are
+        shown disabled, since there is nothing to play.
     loop : bool, optional
-        Initial state of the cycle/loop toggle. Defaults to ``False``.
+        Initial state of the cycle/loop toggle. Ignored if ``motion`` is
+        ``None``. Defaults to ``False``.
     fps : float, optional
-        Target refresh rate for advancing playback and redrawing the
-        visualizer, in frames per second. Defaults to ``30.0``.
+        Target refresh rate for advancing playback, refreshing the status
+        bar and redrawing the visualizer, in frames per second. Defaults
+        to ``30.0``.
 
     Returns
     -------
-    MotionPlayer
-        The playback state machine backing the window, in case the caller
-        wants to inspect or drive it programmatically (e.g. in a test).
+    PlayerWindow
+        Handle exposing the playback state machine (``.motion_player``,
+        ``None`` if ``motion`` was ``None``) and a way to close the window
+        (``.close()``).
 
     Raises
     ------
     RuntimeError
-        If ``model`` has no open visualizer yet.
+        If the 3D visualizer could not be constructed (e.g. ``vtk`` is not
+        installed, or no graphical backend is available).
     ValueError
-        If ``motion`` resolves to fewer than 2 rows or a non-increasing
-        time column (see :class:`MotionData`).
+        If ``motion`` resolves to fewer than 2 rows.
     """
-    if model.visualizer is None:
-        raise RuntimeError("call model.show() before model.show(motion=...) can animate it")
-
     if _IS_WINDOWS:
-        # keeps GetWindowRect/MoveWindow and Tk's own winfo_x/y/width/height
-        # agreeing on the same (unscaled) pixel coordinates; without this,
-        # docking would drift on a display with Windows display scaling.
+        # keeps the embedded window's MoveWindow calls and Tk's own
+        # winfo_width/height agreeing on the same (unscaled) pixel
+        # coordinates; without this, the embedded 3D view would drift out
+        # of sync with its frame on a display with Windows display scaling.
         _user32.SetProcessDPIAware()
 
-    opensim = model.opensim
-    table = opensim.TimeSeriesTable(str(motion)) if isinstance(motion, (str, Path)) else motion
-    data = MotionData(model, table)
-    player = MotionPlayer(data.start_time, data.end_time, loop=loop)
-    docking = _DockingTracker()
+    data: MotionData | None = None
+    player: MotionPlayer | None = None
+    if motion is not None:
+        opensim = model.opensim
+        table = opensim.TimeSeriesTable(str(motion)) if isinstance(motion, (str, Path)) else motion
+        data = MotionData(model, table)
+        player = MotionPlayer(data.start_time, data.end_time, loop=loop)
 
+    stop_event = threading.Event()
     ready = threading.Event()
+    failure: dict[str, Exception] = {}
 
     def run() -> None:
         import tkinter as tk
         from tkinter import ttk
 
+        from ._vtk_visualizer import DEFAULT_SIZE, VTKVisualizer
+
         root = tk.Tk()
-        root.title("Playback")
-        root.resizable(False, False)  # size is always driven by the visualizer, not the user
+        root.title(model.model.getName() or "opensim-models")
+
+        default_width, default_height = DEFAULT_SIZE
+        viewer_frame = tk.Frame(root, bg="black", width=default_width, height=default_height)
+        viewer_frame.pack(side="top", fill="both", expand=True)
+        # has no Tk-managed children (the embedded VTK window is a raw
+        # Win32 child, invisible to Tk's own geometry management) -- lock
+        # in the explicit size above instead of collapsing to one that fits
+        # (empty) content, until <Configure> (bound once VTKVisualizer
+        # embeds into this frame, below) takes over sizing it from then on.
+        viewer_frame.pack_propagate(False)
+
+        controls_frame = tk.Frame(root)
+        controls_frame.pack(side="bottom", fill="x")
 
         slider_var = tk.DoubleVar(value=0.0)
-        time_var = tk.StringVar(value="")
+        time_var = tk.StringVar(value=_NO_MOTION_TEXT)
+        hover_var = tk.StringVar(value="")
         # guards the slider's own `command` callback (fired on *any* value
         # change, including the programmatic ones `tick` below makes every
         # frame) so only an actual user drag seeks playback
         user_is_dragging = {"value": False}
 
         def on_slider_drag(value: str) -> None:
-            if user_is_dragging["value"]:
+            if user_is_dragging["value"] and player is not None:
                 player.seek_fraction(float(value) / 1000.0)
                 _apply_time(model, data, player.time)
 
         slider = ttk.Scale(
-            root, from_=0, to=1000, orient="horizontal",
+            controls_frame, from_=0, to=1000, orient="horizontal",
             variable=slider_var, command=on_slider_drag, length=360,
         )
         slider.bind("<Button-1>", lambda event: user_is_dragging.update(value=True))
         slider.bind("<ButtonRelease-1>", lambda event: user_is_dragging.update(value=False))
-        slider.grid(row=0, column=0, columnspan=5, padx=8, pady=(8, 2), sticky="ew")
+        slider.grid(row=0, column=0, columnspan=6, padx=8, pady=(8, 2), sticky="ew")
+        controls_frame.columnconfigure(tuple(range(6)), weight=1)
 
-        ttk.Label(root, textvariable=time_var).grid(row=1, column=0, columnspan=5, pady=(0, 6))
+        ttk.Label(controls_frame, textvariable=time_var).grid(
+            row=1, column=0, columnspan=6, pady=(0, 6)
+        )
 
         def do_play_pause() -> None:
             player.play_pause()
@@ -536,51 +525,137 @@ def start_player(
             player.fast_backward()
             play_button.config(text="Pause")
 
-        cycle_var = tk.BooleanVar(value=player.loop)
+        cycle_var = tk.BooleanVar(value=player.loop if player is not None else loop)
 
         def do_toggle_loop() -> None:
             player.toggle_loop()
             cycle_var.set(player.loop)
 
-        rew_button = ttk.Button(root, text="◄◄", width=4, command=do_fast_backward)
+        rew_button = ttk.Button(controls_frame, text="◄◄", width=4, command=do_fast_backward)
         rew_button.grid(row=2, column=0, padx=4, pady=(0, 8))
-        play_button = ttk.Button(root, text="Play", width=6, command=do_play_pause)
+        play_button = ttk.Button(controls_frame, text="Play", width=6, command=do_play_pause)
         play_button.grid(row=2, column=1, padx=4, pady=(0, 8))
-        stop_button = ttk.Button(root, text="Stop", width=6, command=do_stop)
+        stop_button = ttk.Button(controls_frame, text="Stop", width=6, command=do_stop)
         stop_button.grid(row=2, column=2, padx=4, pady=(0, 8))
-        ff_button = ttk.Button(root, text="►►", width=4, command=do_fast_forward)
+        ff_button = ttk.Button(controls_frame, text="►►", width=4, command=do_fast_forward)
         ff_button.grid(row=2, column=3, padx=4, pady=(0, 8))
         cycle_check = ttk.Checkbutton(
-            root, text="Cycle", width=6, variable=cycle_var, command=do_toggle_loop,
+            controls_frame, text="Cycle", width=6, variable=cycle_var, command=do_toggle_loop,
         )
         cycle_check.grid(row=2, column=4, padx=4, pady=(0, 8))
+
+        # Matches vtkActor's own default visibility (True), so this needs
+        # no sync against the visualizer at startup -- ground_check's
+        # `command` only reads `model.visualizer` later, once a click can
+        # actually happen (construction has long since finished by then).
+        ground_var = tk.BooleanVar(value=True)
+
+        def do_toggle_ground() -> None:
+            model.visualizer.set_ground_visible(ground_var.get())
+
+        ground_check = ttk.Checkbutton(
+            controls_frame, text="Ground", width=6, variable=ground_var, command=do_toggle_ground,
+        )
+        ground_check.grid(row=2, column=5, padx=4, pady=(0, 8))
+
+        playback_widgets = (slider, rew_button, play_button, stop_button, ff_button, cycle_check)
+        if player is None:
+            for widget in playback_widgets:
+                widget.config(state="disabled")
+
+        separator = ttk.Separator(controls_frame, orient="horizontal")
+        separator.grid(row=3, column=0, columnspan=6, sticky="ew", pady=(4, 2))
+        status_bar = tk.Label(
+            controls_frame, textvariable=hover_var, anchor="w", bg="#222222", fg="white",
+        )
+        status_bar.grid(row=4, column=0, columnspan=6, sticky="ew", padx=0, pady=(0, 0))
+
+        # winfo_id() alone realizes viewer_frame's native window without
+        # pumping Tk's event queue, unlike update()/update_idletasks() --
+        # calling either of those *before* constructing VTKVisualizer
+        # (next) was tried and rejected, confirmed directly to hang
+        # forever inside vtkRenderWindowInteractor.Initialize(), seemingly
+        # from some conflict with Tk's own event-loop setup already having
+        # touched this thread's message queue first.
+        hwnd_box: dict[str, int] = {}
+        embed = None
+        if _IS_WINDOWS:
+            parent_hwnd = viewer_frame.winfo_id()
+
+            def embed(window_id: Any) -> None:
+                # called by VTKVisualizer.__init__ itself, between its
+                # window's creation and its first paint. Only reparents/
+                # restyles here, deliberately not also sizing it (below,
+                # once construction is done) in the same call: an
+                # immediate `MoveWindow` forces a synchronous repaint
+                # before this window's *first* real `Render()` -- still a
+                # couple lines away at this point, inside
+                # `VTKVisualizer.__init__`.
+                hwnd = _hwnd_from_vtk_window_id(window_id)
+                hwnd_box["hwnd"] = hwnd
+                _embed_visualizer_window(hwnd, parent_hwnd)
+
+        try:
+            model._visualizer = VTKVisualizer(model, embed=embed)
+        except Exception as error:  # noqa: BLE001 -- reported via `failure`, not swallowed
+            failure["error"] = error
+            ready.set()
+            root.destroy()
+            return
+
+        root.update_idletasks()
+        root.geometry(f"{default_width}x{default_height + controls_frame.winfo_reqheight()}")
+        root.update()
+
+        if "hwnd" in hwnd_box:
+            hwnd = hwnd_box["hwnd"]
+            _resize_embedded_window(hwnd, viewer_frame.winfo_width(), viewer_frame.winfo_height())
+            model.visualizer.resize(viewer_frame.winfo_width(), viewer_frame.winfo_height())
+
+            def on_viewer_configure(event: Any) -> None:
+                if event.width > 1 and event.height > 1:
+                    _resize_embedded_window(hwnd, event.width, event.height)
+                    model.visualizer.resize(event.width, event.height)
+
+            viewer_frame.bind("<Configure>", on_viewer_configure)
 
         last_tick = _time.monotonic()
 
         def tick() -> None:
+            if stop_event.is_set():
+                root.destroy()
+                return
             nonlocal last_tick
             now = _time.monotonic()
             dt = now - last_tick
             last_tick = now
-            docking.sync(root)
-            if player.playing:
-                player.advance(dt)
-                _apply_time(model, data, player.time)
-                if not player.playing:
-                    play_button.config(text="Play")
-            slider_var.set(player.fraction * 1000.0)
-            time_var.set(
-                f"{player.time - player.start_time:6.2f} / "
-                f"{player.end_time - player.start_time:.2f} s  ({player.speed:+.0f}x)"
-            )
+            model.visualizer.process_events()
+            if player is not None:
+                if player.playing:
+                    player.advance(dt)
+                    _apply_time(model, data, player.time)
+                    if not player.playing:
+                        play_button.config(text="Play")
+                slider_var.set(player.fraction * 1000.0)
+                time_var.set(
+                    f"{player.time - player.start_time:6.2f} / "
+                    f"{player.end_time - player.start_time:.2f} s  ({player.speed:+.0f}x)"
+                )
+            hover_var.set(model.visualizer.hover_text() or " ")
             root.after(max(1, round(1000.0 / fps)), tick)
 
-        root.update_idletasks()  # settle geometry before the first dock/tick
-        _apply_time(model, data, player.time)
+        if player is not None:
+            _apply_time(model, data, player.time)
         tick()
         ready.set()
         root.mainloop()
 
     threading.Thread(target=run, daemon=True).start()
-    ready.wait(timeout=5.0)
-    return player
+    ready.wait(timeout=10.0)
+    if "error" in failure:
+        raise RuntimeError(
+            "Unable to open the 3D visualizer. Check that 'vtk' is "
+            "installed (pip install vtk) and that a graphical backend "
+            "is available."
+        ) from failure["error"]
+    return PlayerWindow(player, stop_event)

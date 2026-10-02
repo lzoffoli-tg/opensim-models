@@ -231,6 +231,7 @@ class Box(OpenSimModel):
         write_box_mesh(mesh_path, width, height, depth)
 
         self.model = self.opensim.Model()
+        self.model.setName("Box")
         body = self.opensim.Body(
             _BODY_NAME, mass, self.opensim.Vec3(0, 0, 0), self.opensim.Inertia(*inertia)
         )
