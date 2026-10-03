@@ -33,37 +33,59 @@ def build_source(
     ``Sphere`` -- what :mod:`opensim_models.operators`'s
     ``add_box_body``/``add_cylinder_body``/``add_sphere_body`` and every
     bundled model's own mesh attach -- are).
+
+    Applies ``geometry``'s own ``scale_factors`` (every ``opensim.Geometry``
+    has one, default ``(1, 1, 1)``) on top of the source -- this is what
+    makes a scaled mesh (e.g. every :class:`~opensim_models.models.User`
+    body not at the base model's own size) render at its actual scaled
+    size instead of the generic unscaled one baked into the mesh file,
+    which would otherwise visibly detach a long bone's rendered geometry
+    from its (correctly scaled) neighboring joints.
     """
     mesh = opensim.Mesh.safeDownCast(geometry)
     if mesh is not None:
-        return _reader_for_file(vtk, mesh.get_mesh_file(), resolve_file)
+        source = _reader_for_file(vtk, mesh.get_mesh_file(), resolve_file)
+    else:
+        brick = opensim.Brick.safeDownCast(geometry)
+        if brick is not None:
+            half_lengths = brick.get_half_lengths()
+            source = vtk.vtkCubeSource()
+            source.SetXLength(half_lengths.get(0) * 2.0)
+            source.SetYLength(half_lengths.get(1) * 2.0)
+            source.SetZLength(half_lengths.get(2) * 2.0)
+        else:
+            cylinder = opensim.Cylinder.safeDownCast(geometry)
+            if cylinder is not None:
+                source = vtk.vtkCylinderSource()
+                source.SetRadius(cylinder.get_radius())
+                source.SetHeight(cylinder.get_half_height() * 2.0)
+                source.SetResolution(32)
+            else:
+                sphere = opensim.Sphere.safeDownCast(geometry)
+                if sphere is not None:
+                    source = vtk.vtkSphereSource()
+                    source.SetRadius(sphere.get_radius())
+                    source.SetThetaResolution(32)
+                    source.SetPhiResolution(32)
+                else:
+                    source = None
 
-    brick = opensim.Brick.safeDownCast(geometry)
-    if brick is not None:
-        half_lengths = brick.get_half_lengths()
-        source = vtk.vtkCubeSource()
-        source.SetXLength(half_lengths.get(0) * 2.0)
-        source.SetYLength(half_lengths.get(1) * 2.0)
-        source.SetZLength(half_lengths.get(2) * 2.0)
+    if source is None:
+        return None
+    return _apply_scale(vtk, source, geometry)
+
+
+def _apply_scale(vtk: Any, source: Any, geometry: Any) -> Any:
+    scale_factors = geometry.get_scale_factors()
+    sx, sy, sz = scale_factors.get(0), scale_factors.get(1), scale_factors.get(2)
+    if (sx, sy, sz) == (1.0, 1.0, 1.0):
         return source
-
-    cylinder = opensim.Cylinder.safeDownCast(geometry)
-    if cylinder is not None:
-        source = vtk.vtkCylinderSource()
-        source.SetRadius(cylinder.get_radius())
-        source.SetHeight(cylinder.get_half_height() * 2.0)
-        source.SetResolution(32)
-        return source
-
-    sphere = opensim.Sphere.safeDownCast(geometry)
-    if sphere is not None:
-        source = vtk.vtkSphereSource()
-        source.SetRadius(sphere.get_radius())
-        source.SetThetaResolution(32)
-        source.SetPhiResolution(32)
-        return source
-
-    return None
+    transform = vtk.vtkTransform()
+    transform.Scale(sx, sy, sz)
+    scaler = vtk.vtkTransformPolyDataFilter()
+    scaler.SetTransform(transform)
+    scaler.SetInputConnection(source.GetOutputPort())
+    return scaler
 
 
 def _reader_for_file(
