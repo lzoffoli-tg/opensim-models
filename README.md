@@ -150,11 +150,12 @@ assert user_50.model is not user_75.model
 ```python
 print(user.model)        # opensim.Model
 print(user.state)        # opensim.State
-print(user.bodies)       # BodySet
-print(user.joints)       # JointSet
-print(user.muscles)      # MuscleSet
-print(user.markers)      # MarkerSet
-print(user.coordinates)  # CoordinateSet
+print(user.ground)       # opensim.Ground, equivalente a user.model.getGround()
+print(user.bodies)       # dict[str, components.Body], per nome
+print(user.joints)       # dict[str, components.Joint]
+print(user.muscles)      # dict[str, components.Muscle]
+print(user.markers)      # dict[str, components.Marker]
+print(user.coordinates)  # dict[str, components.Coordinate]
 ```
 
 Per accedere a un elemento specifico si possono usare i metodi nominati:
@@ -288,7 +289,7 @@ model = OpenSimModel(model_path=None)
 with model.structural_change():
     body = operators.add_body(model, "b1", mass=2.0, inertia=(1, 1, 1, 0, 0, 0))
     operators.add_joint(
-        model, model.opensim.FreeJoint("b1_to_ground", model.model.getGround(), body)
+        model, model.opensim.FreeJoint("b1_to_ground", model.ground, body)
     )
 
 print(model.bodies.getSize())  # 1
@@ -504,7 +505,7 @@ screen_diagonale = Screen(inches=27.0, ratio="21:9")
 
 `center_x`/`center_y`/`center_z` posizionano il centro del pannello nel sistema di riferimento del ground (metri); `angle_deg` ne definisce l'inclinazione rispetto al ground: `0` disteso a terra, `90` (default) verticale, come un monitor appoggiato su un piano orizzontale.
 
-Ogni parametro del costruttore ha una property in lettura (`width_mm`, `height_mm`, `inches`, `ratio`, `center_x`, `center_y`, `center_z`, `angle_deg`) e un setter dedicato (`set_width_mm`, `set_height_mm`, `set_inches`, `set_ratio`, `set_center_x`, `set_center_y`, `set_center_z`, `set_angle_deg`). Ogni setter ricostruisce il corpo OpenSim, la mesh e il giunto verso ground con i parametri aggiornati:
+Ogni parametro del costruttore ha una property in lettura (`width_mm`, `height_mm`, `inches`, `ratio`, `center_x`, `center_y`, `center_z`, `angle_deg`, `mesh_dir`) e un setter dedicato (`set_width_mm`, `set_height_mm`, `set_inches`, `set_ratio`, `set_center_x`, `set_center_y`, `set_center_z`, `set_angle_deg`, `set_mesh_dir`). Ogni setter ricostruisce il corpo OpenSim, la mesh e il giunto verso ground con i parametri aggiornati:
 
 ```python
 screen.set_angle_deg(0)       # ora disteso sul piano orizzontale
@@ -512,7 +513,14 @@ screen.set_width_mm(600.0)
 screen.set_height_mm(340.0)   # passa in modalità dimensioni esplicite solo una volta impostate entrambe
 ```
 
-Massa e tensore d'inerzia del pannello derivano dal suo volume (larghezza × altezza × 1 mm) assumendo una densità da plexiglass/PMMA (`1180 kg/m³`); una mesh a forma di parallelepipedo viene generata automaticamente e salvata in `components/assets/meshes/screen_panel.stl`, rigenerata a ogni cambio di dimensione. Il pannello è internamente un unico `opensim.Body` ("screen_panel") saldato al ground con un `WeldJoint` (nessun grado di libertà): la sua posa è interamente determinata da `center_x`/`center_y`/`center_z`/`angle_deg`, oppure da `rotate()`/`translate()` (thin wrapper sulle omonime funzioni di `operators`, applicate al container privato che lo rappresenta).
+Massa e tensore d'inerzia del pannello derivano dal suo volume (larghezza × altezza × 1 mm) assumendo una densità da plexiglass/PMMA (`1180 kg/m³`); una mesh a forma di parallelepipedo viene generata automaticamente e salvata in `screen_panel.stl` dentro `mesh_dir`, rigenerata a ogni cambio di dimensione. Il pannello è internamente un unico `opensim.Body` ("screen_panel") saldato al ground con un `WeldJoint` (nessun grado di libertà): la sua posa è interamente determinata da `center_x`/`center_y`/`center_z`/`angle_deg`, oppure da `rotate()`/`translate()` (thin wrapper sulle omonime funzioni di `operators`, applicate al container privato che lo rappresenta).
+
+`mesh_dir` (opzionale, passabile anche al costruttore) è la cartella dove viene scritto `screen_panel.stl`: di default è `components/assets/meshes/` dentro il package stesso (creata automaticamente se mancante), ma può essere impostata su un percorso qualunque -- utile ad es. quando quella cartella di default non è scrivibile (un'installazione del package in una posizione protetta) o per raccogliere altrove le mesh generate da un modello. `set_mesh_dir` sposta la destinazione e rigenera subito la mesh lì; quella scritta in precedenza nella vecchia cartella non viene rimossa:
+
+```python
+screen = Screen(mesh_dir="C:/tmp/mie_mesh")
+screen.set_mesh_dir("C:/tmp/altra_cartella")  # creata automaticamente se non esiste
+```
 
 ## Creare un parallelepipedo (Box)
 
@@ -529,7 +537,9 @@ box = Box(
 )
 ```
 
-A differenza di `Screen`, la massa è un dato diretto (`mass_kg`, non derivata da una densità di materiale); il tensore d'inerzia resta comunque quello analitico di un parallelepipedo omogeneo pieno con quella massa e quelle dimensioni. Ogni dimensione ha una property in lettura (`width`, `height`, `depth`, `mass_kg`) e un setter dedicato (`set_width`, `set_height`, `set_depth`, `set_mass_kg`) che ricostruisce corpo, mesh e giunto -- la mesh, generata con lo stesso writer STL usato internamente da `operators.add_box_body` (`opensim_models._primitives.write_box_mesh`), viene salvata in `components/assets/meshes/box.stl` e rigenerata a ogni cambio di dimensione. `width`/`height`/`depth`/`mass_kg` devono essere finiti e strettamente positivi, altrimenti il costruttore (o il setter) solleva `ValueError`.
+A differenza di `Screen`, la massa è un dato diretto (`mass_kg`, non derivata da una densità di materiale); il tensore d'inerzia resta comunque quello analitico di un parallelepipedo omogeneo pieno con quella massa e quelle dimensioni. Ogni dimensione ha una property in lettura (`width`, `height`, `depth`, `mass_kg`) e un setter dedicato (`set_width`, `set_height`, `set_depth`, `set_mass_kg`) che ricostruisce corpo, mesh e giunto -- la mesh, generata con lo stesso writer STL usato internamente da `operators.add_box_body` (`opensim_models._primitives.write_box_mesh`), viene salvata in `box.stl` dentro `mesh_dir` e rigenerata a ogni cambio di dimensione. `width`/`height`/`depth`/`mass_kg` devono essere finiti e strettamente positivi, altrimenti il costruttore (o il setter) solleva `ValueError`.
+
+Come `Screen`, `Box` accetta `mesh_dir` al costruttore (property in lettura `mesh_dir`, setter dedicato `set_mesh_dir`): la cartella dove viene scritto `box.stl`, di default `components/assets/meshes/` dentro il package (creata automaticamente se mancante), sostituibile con un percorso qualunque -- vedi "Creare uno schermo (Screen)" sopra per i dettagli (stesso comportamento per entrambi i componenti).
 
 `origin`/`angle_deg` impostano la posa iniziale (un `WeldJoint` verso ground), e hanno anche loro un setter dedicato (`set_origin`, `set_angle_deg`, ciascuno dei due preserva l'altra metà della posa corrente): ma a differenza delle dimensioni, le property stesse vengono sempre lette direttamente dalla posa corrente del corpo, quindi riflettono comunque l'ultima cosa che lo ha spostato -- gli argomenti del costruttore, `set_origin`/`set_angle_deg`, un setter di dimensione (che preserva la posa corrente durante la ricostruzione), oppure `rotate()`/`translate()` -- tutti modi ugualmente validi per riposizionare un `Box` dopo la costruzione:
 
@@ -601,7 +611,7 @@ merged.attach_component(
 
 ```python
 full.attach_component(
-    full.body("box"), to=full.model.getGround(),
+    full.body("box"), to=full.ground,
     parent_orientation_deg=(0.0, 0.0, incline_deg),
     joint_type="slider",
 )

@@ -34,10 +34,11 @@ class Box(Body):
     A :class:`~opensim_models.components.Body` wrapping one ``opensim.Body``
     ("box") sized ``width`` (local X) x ``height`` (local Y) x ``depth``
     (local Z), in metres, with a matching box mesh (re)generated and
-    written to ``assets/meshes/box.stl`` next to this module whenever a
-    dimension changes. Mass is given directly (``mass_kg``, not derived
-    from a material density); the inertia tensor is the analytical one
-    for a solid rectangular prism of that mass and those dimensions.
+    written to ``box.stl`` inside :attr:`mesh_dir` (defaulting to
+    ``assets/meshes`` next to this module) whenever a dimension changes.
+    Mass is given directly (``mass_kg``, not derived from a material
+    density); the inertia tensor is the analytical one for a solid
+    rectangular prism of that mass and those dimensions.
 
     Like any other component, a ``Box`` has no ``show()`` of its own --
     :meth:`~opensim_models.model.OpenSimModel.show` operates on
@@ -79,6 +80,14 @@ class Box(Body):
         Euler angles in degrees. Defaults to ``(0.0, 0.0, 0.0)``.
     mass_kg : float, optional
         Mass, in kilograms. Must be strictly positive. Defaults to ``1.0``.
+    mesh_dir : str, pathlib.Path or None, optional
+        Directory the box mesh (``box.stl``) is (re)written to, created
+        (along with any missing parent) if it doesn't already exist.
+        Defaults to ``None``, meaning the package's own bundled
+        ``assets/meshes`` folder next to this module -- set this when that
+        default location isn't writable (e.g. an admin-owned install) or
+        to collect a model's generated meshes somewhere else of your
+        choosing.
 
     Raises
     ------
@@ -95,6 +104,7 @@ class Box(Body):
         origin: tuple[float, float, float] = (0.0, 0.0, 0.0),
         angle_deg: tuple[float, float, float] = (0.0, 0.0, 0.0),
         mass_kg: float = 1.0,
+        mesh_dir: str | Path | None = None,
     ) -> None:
         """Build the box body/joint from the given dimensions, pose and mass."""
         # A private, never-exposed OpenSimModel: just enough of a container
@@ -102,8 +112,9 @@ class Box(Body):
         # state) before it belongs to any real container -- see the class
         # docstring for how it actually becomes visible (`model + box`).
         self._container = OpenSimModel(model_path=None)
-        _MESHES_DIR.mkdir(parents=True, exist_ok=True)
-        self._container.add_geometry_directory(_MESHES_DIR)
+        self._mesh_dir = Path(mesh_dir) if mesh_dir is not None else _MESHES_DIR
+        self._mesh_dir.mkdir(parents=True, exist_ok=True)
+        self._container.add_geometry_directory(self._mesh_dir)
 
         self._width = _positive(width)
         self._height = _positive(height)
@@ -120,7 +131,7 @@ class Box(Body):
         """Set the full extent along local X and rebuild the box, keeping its current pose.
 
         Rebuilds the body, mesh and joint (new mesh written to
-        ``assets/meshes/box.stl``, inertia recomputed from the new
+        ``box.stl`` inside :attr:`mesh_dir`, inertia recomputed from the new
         dimensions and the current :attr:`mass_kg`), re-reading
         :attr:`origin`/:attr:`angle_deg` beforehand so the box's placement
         is unchanged.
@@ -242,6 +253,30 @@ class Box(Body):
             If ``kilograms`` is not finite or not strictly positive.
         """
         self.set_mass_kg(kilograms)
+
+    @property
+    def mesh_dir(self) -> Path:
+        """Directory ``box.stl`` is (re)written to on every rebuild."""
+        return self._mesh_dir
+
+    def set_mesh_dir(self, mesh_dir: str | Path) -> None:
+        """Move where ``box.stl`` is written to, and rebuild the box there.
+
+        Creates ``mesh_dir`` (along with any missing parent) if it doesn't
+        already exist, then rebuilds the box -- same as a dimension setter
+        (see :meth:`set_width`) -- which writes a fresh ``box.stl`` at the
+        new location. The mesh file previously written to the old
+        :attr:`mesh_dir`, if any, is left behind as-is.
+
+        Parameters
+        ----------
+        mesh_dir : str or pathlib.Path
+            New directory for the box mesh.
+        """
+        self._mesh_dir = Path(mesh_dir)
+        self._mesh_dir.mkdir(parents=True, exist_ok=True)
+        self._container.add_geometry_directory(self._mesh_dir)
+        self._rebuild(origin=self.origin, angle_deg=self.angle_deg)
 
     @property
     def origin(self) -> tuple[float, float, float]:
@@ -430,9 +465,9 @@ class Box(Body):
         -------
         Box
             A fresh ``Box`` built from this one's current
-            ``width``/``height``/``depth``/``mass_kg``/``origin``/``angle_deg``
-            -- its own private container, entirely independent of this
-            box's.
+            ``width``/``height``/``depth``/``mass_kg``/``origin``/``angle_deg``/
+            ``mesh_dir`` -- its own private container, entirely independent
+            of this box's.
         """
         return Box(
             self._width,
@@ -441,6 +476,7 @@ class Box(Body):
             origin=self.origin,
             angle_deg=self.angle_deg,
             mass_kg=self._mass_kg,
+            mesh_dir=self._mesh_dir,
         )
 
     def _rebuild(
@@ -455,7 +491,7 @@ class Box(Body):
             mass * (width**2 + height**2) / 12.0,
         )
 
-        mesh_path = _MESHES_DIR / _MESH_FILENAME
+        mesh_path = self._mesh_dir / _MESH_FILENAME
         write_box_mesh(mesh_path, width, height, depth)
 
         container = self._container

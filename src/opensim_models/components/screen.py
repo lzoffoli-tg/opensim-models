@@ -112,8 +112,9 @@ class Screen(Body):
 
     Mass and inertia are derived from the panel's volume assuming a
     plexiglass (PMMA) density, and a matching box mesh is (re)generated and
-    written to ``assets/meshes/screen_panel.stl`` next to this module
-    whenever the panel's dimensions change.
+    written to ``screen_panel.stl`` inside :attr:`mesh_dir` (defaulting to
+    ``assets/meshes`` next to this module) whenever the panel's dimensions
+    change.
 
     Like any other component, a ``Screen`` has no ``show()`` of its own --
     :meth:`~opensim_models.model.OpenSimModel.show` operates on
@@ -140,6 +141,14 @@ class Screen(Body):
     angle_deg : float, optional
         Panel inclination relative to the ground, in degrees: ``0`` lies
         flat, ``90`` (default) stands upright.
+    mesh_dir : str, pathlib.Path or None, optional
+        Directory the panel mesh (``screen_panel.stl``) is (re)written to,
+        created (along with any missing parent) if it doesn't already
+        exist. Defaults to ``None``, meaning the package's own bundled
+        ``assets/meshes`` folder next to this module -- set this when that
+        default location isn't writable (e.g. an admin-owned install) or
+        to collect a model's generated meshes somewhere else of your
+        choosing.
 
     Raises
     ------
@@ -159,13 +168,15 @@ class Screen(Body):
         center_y: float = 0.0,
         center_z: float = 0.0,
         angle_deg: float = 90,
+        mesh_dir: str | Path | None = None,
     ) -> None:
         """Build the panel body/joint from the given size and pose parameters."""
         # A private, never-exposed OpenSimModel -- see the class docstring
         # for how this panel actually becomes visible (`model + screen`).
         self._container = OpenSimModel(model_path=None)
-        _MESHES_DIR.mkdir(parents=True, exist_ok=True)
-        self._container.add_geometry_directory(_MESHES_DIR)
+        self._mesh_dir = Path(mesh_dir) if mesh_dir is not None else _MESHES_DIR
+        self._mesh_dir.mkdir(parents=True, exist_ok=True)
+        self._container.add_geometry_directory(self._mesh_dir)
 
         self._width_mm = width_mm
         self._height_mm = height_mm
@@ -381,6 +392,30 @@ class Screen(Body):
         self._angle_deg = angle_deg
         self._rebuild()
 
+    @property
+    def mesh_dir(self) -> Path:
+        """Directory ``screen_panel.stl`` is (re)written to on every rebuild."""
+        return self._mesh_dir
+
+    def set_mesh_dir(self, mesh_dir: str | Path) -> None:
+        """Move where ``screen_panel.stl`` is written to, and rebuild the panel there.
+
+        Creates ``mesh_dir`` (along with any missing parent) if it doesn't
+        already exist, then rebuilds the panel -- same as a size/pose
+        setter (see :meth:`set_width_mm`) -- which writes a fresh
+        ``screen_panel.stl`` at the new location. The mesh file previously
+        written to the old :attr:`mesh_dir`, if any, is left behind as-is.
+
+        Parameters
+        ----------
+        mesh_dir : str or pathlib.Path
+            New directory for the panel mesh.
+        """
+        self._mesh_dir = Path(mesh_dir)
+        self._mesh_dir.mkdir(parents=True, exist_ok=True)
+        self._container.add_geometry_directory(self._mesh_dir)
+        self._rebuild()
+
     def rotate(
         self,
         origin: Any,
@@ -469,8 +504,8 @@ class Screen(Body):
         Screen
             A fresh ``Screen`` built from this one's current
             ``width_mm``/``height_mm``/``inches``/``ratio``/``center_x``/
-            ``center_y``/``center_z``/``angle_deg`` -- its own private
-            container, entirely independent of this panel's.
+            ``center_y``/``center_z``/``angle_deg``/``mesh_dir`` -- its own
+            private container, entirely independent of this panel's.
         """
         return Screen(
             width_mm=self._width_mm,
@@ -481,6 +516,7 @@ class Screen(Body):
             center_y=self._center_y,
             center_z=self._center_z,
             angle_deg=self._angle_deg,
+            mesh_dir=self._mesh_dir,
         )
 
     def _resolve_size_mm(self) -> tuple[float, float]:
@@ -515,7 +551,7 @@ class Screen(Body):
             mass * (width_m**2 + height_m**2) / 12.0,
         )
 
-        mesh_path = _MESHES_DIR / _MESH_FILENAME
+        mesh_path = self._mesh_dir / _MESH_FILENAME
         _write_box_mesh(mesh_path, width_mm, height_mm, _THICKNESS_MM)
 
         container = self._container

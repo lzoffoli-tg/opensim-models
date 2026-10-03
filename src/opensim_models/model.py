@@ -477,6 +477,29 @@ class OpenSimModel:
             coordinates.get(index).set_locked(False)
 
     @property
+    def ground(self) -> Any:
+        """This model's ground frame (``opensim.Ground``).
+
+        A thin convenience over ``self.model.getGround()``, returned as the
+        raw ``opensim`` object rather than wrapped in
+        :class:`~opensim_models.components.Body` (``Ground`` is a
+        ``PhysicalFrame``, not a ``Body`` -- it carries no mass/inertia, so
+        most of that wrapper's API wouldn't apply to it). Use it directly
+        as the fixed parent frame for a joint (e.g. ``operators.add_weld_joint``,
+        a component's ``attach_component``/constructor ``to=``) wherever
+        ``self.model.getGround()`` would otherwise be spelled out.
+
+        Returns
+        -------
+        opensim.Ground
+            This model's ground frame. Rebuilt fresh on every access (via
+            ``self.model.getGround()``), so it always reflects the current
+            ``self.model`` -- never a stale reference from before a
+            structural change replaced it.
+        """
+        return self.model.getGround()
+
+    @property
     def bodies(self) -> dict[str, "components.Body"]:
         """Return every body currently in the model.
 
