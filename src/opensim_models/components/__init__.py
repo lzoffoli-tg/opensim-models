@@ -78,12 +78,30 @@ class _ComponentWrapper:
     def set_name(self, name: str) -> None:
         """Rename this component.
 
+        Also re-finalizes ``owner.model``'s connections, so every other
+        component's socket that refers to this one (e.g. a joint's
+        offset frame naming its parent/child body) gets its stored
+        connectee path refreshed to the new name. Skipping this would
+        leave those paths pointing at the old name -- harmless for the
+        live, already-resolved connection (it keeps working off the
+        direct object reference), but fatal the next time the model is
+        cloned or merged elsewhere (:meth:`~opensim_models.model.OpenSimModel.copy`/
+        :meth:`~opensim_models.model.OpenSimModel.add_model`/``+``), since
+        that re-resolves every connection from its stored path string: a
+        stale one raises a native ``RuntimeError`` from
+        ``finalizeConnections()`` (``Component ... could not find
+        '/bodyset/<old name>'``) instead of finding the renamed component.
+        This is purely a bookkeeping refresh (no structural change), so
+        ``owner.state`` stays valid -- no :meth:`~opensim_models.model.OpenSimModel.reinitialize`
+        needed.
+
         Parameters
         ----------
         name : str
             New OpenSim name.
         """
         self._raw.setName(name)
+        self._owner.model.finalizeConnections()
 
     @property
     def raw(self) -> Any:
