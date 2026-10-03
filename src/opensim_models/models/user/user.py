@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+from typing import Literal
 
 from ...model import OpenSimModel, _register_geometry_search_path, import_opensim
 from ._data import DEFAULT_DATASET, resolve_reference
@@ -46,11 +47,11 @@ class User(OpenSimModel, _PostureMixin, _JointCenterMixin):
 
     Parameters
     ----------
-    gender : str
+    gender : str | Literal['M', 'F']
         Sex code used to select the ANSUR II reference population. Must be
         exactly ``"M"`` or ``"F"`` (case-sensitive, no other values
         accepted).
-    height : float or None, optional
+    height_cm : float or None, optional
         Requested stature, in centimetres. If provided, every anthropometric
         measurement (stature included) is resolved directly from this
         height via a per-measurement PCHIP regression against the ANSUR
@@ -85,8 +86,8 @@ class User(OpenSimModel, _PostureMixin, _JointCenterMixin):
 
     def __init__(
         self,
-        gender: str,
-        height: float | None = None,
+        gender: str | Literal["M", "F"],
+        height_cm: float | None = None,
         percentile: float = 50.0,
         *,
         dataset: str | Path = DEFAULT_DATASET,
@@ -105,7 +106,7 @@ class User(OpenSimModel, _PostureMixin, _JointCenterMixin):
         the resolved reference against the 50th-percentile baseline for the
         same ``gender`` (see "Scaling antropometrico" in the README).
         """
-        self._reference = resolve_reference(gender, height, percentile, dataset)
+        self._reference = resolve_reference(gender, height_cm, percentile, dataset)
         # Register the mesh directory before the model file is loaded: the
         # bodies' attached Mesh geometry resolves its file immediately while
         # the model is being built, not lazily when show() runs. self isn't
