@@ -83,19 +83,27 @@ def add_contact_geometry(
         ``opensim.ContactSphere``. A
         :class:`~opensim_models.components.ContactGeometry` wrapper is
         also accepted and unwrapped automatically (see :func:`_unwrap`).
+        For the common contact geometry types, built and added in one
+        call, see :func:`add_contact_sphere`/:func:`add_contact_half_space`/
+        :func:`add_contact_mesh` instead.
     reinitialize : bool, optional
         See :func:`add_component`.
 
     Returns
     -------
     components.ContactGeometry
-        ``contact_geometry``, wrapped in the thin, generic
-        :class:`~opensim_models.components.ContactGeometry` (``.name``/
-        ``.raw``/``.set_name()`` only).
+        ``contact_geometry``, wrapped in the most specific wrapper
+        available for its concrete type
+        (:class:`~opensim_models.components.ContactSphere`,
+        :class:`~opensim_models.components.ContactHalfSpace`,
+        :class:`~opensim_models.components.ContactMesh`), or the thin,
+        generic :class:`~opensim_models.components.ContactGeometry`
+        (``.name``/``.raw``/``.set_name()`` only) for anything else -- see
+        :func:`~opensim_models.components._wrap_contact_geometry`.
     """
     contact_geometry = _unwrap(contact_geometry)
     add_component(model, "contact_geometry", contact_geometry, reinitialize=reinitialize)
-    return components.ContactGeometry(model, contact_geometry)
+    return components._wrap_contact_geometry(model, contact_geometry)
 
 
 def remove_contact_geometry(

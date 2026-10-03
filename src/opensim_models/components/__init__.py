@@ -48,6 +48,9 @@ __all__ = [
     "ConstantDistanceConstraint",
     "Controller",
     "ContactGeometry",
+    "ContactSphere",
+    "ContactHalfSpace",
+    "ContactMesh",
     "Probe",
 ]
 
@@ -1397,16 +1400,87 @@ class Controller(_ComponentWrapper):
 class ContactGeometry(_ComponentWrapper):
     """Python-friendly wrapper around an ``opensim.ContactGeometry``.
 
-    A thin, intentionally minimal wrapper for now -- see the module
-    docstring for why (OpenSim has many concrete ``ContactGeometry``
-    subtypes, e.g. ``ContactSphere``/``ContactHalfSpace``/``ContactMesh``,
-    each with its own API). Provides only the base
-    :class:`_ComponentWrapper` surface:
-    :attr:`~_ComponentWrapper.name`/:meth:`~_ComponentWrapper.set_name`,
-    equality/hashing by underlying identity, and :attr:`~_ComponentWrapper.raw`
-    as the escape hatch to the underlying ``opensim.ContactGeometry``
-    object for anything not wrapped here (e.g. a sphere's radius).
+    Every concrete subtype (``ContactSphere``, ``ContactHalfSpace``,
+    ``ContactMesh``) shares this base's ``location``/``orientation_deg``
+    (an offset/orientation within whichever ``opensim.PhysicalFrame`` it is
+    attached to, via its ``frame`` socket) -- this class provides those,
+    plus :attr:`position_global`/:attr:`position_local`/:attr:`parents`,
+    for all of them at once. See :class:`ContactSphere` (``radius``),
+    :class:`ContactHalfSpace` (no extra property -- see its own docstring
+    for the "which side is solid" convention) and :class:`ContactMesh`
+    (``filename``) for what each subtype adds on top; use
+    :func:`~opensim_models.operators.add_contact_sphere`/
+    :func:`~opensim_models.operators.add_contact_half_space`/
+    :func:`~opensim_models.operators.add_contact_mesh` to build and attach
+    one in a single call, or :attr:`~_ComponentWrapper.raw` as the escape
+    hatch to anything not wrapped here, for any subtype not yet given its
+    own dedicated wrapper.
     """
+
+    @property
+    def location(self) -> tuple[float, float, float]:
+        """This contact geometry's offset within its attached frame, in metres.
+
+        OpenSim's own native ``get_location()`` property, shared by every
+        concrete ``ContactGeometry`` subtype -- same value as
+        :attr:`position_local`, provided under this name too since it
+        matches OpenSim's own terminology (same relationship as
+        :attr:`Marker.location`/:attr:`Marker.position_local`).
+        """
+        local = self._raw.get_location()
+        return (float(local.get(0)), float(local.get(1)), float(local.get(2)))
+
+    def set_location(self, location: tuple[float, float, float]) -> None:
+        """Set this contact geometry's offset within its attached frame, in metres.
+
+        Parameters
+        ----------
+        location : tuple[float, float, float]
+            ``(x, y, z)`` offset, in metres, in the attached frame's own
+            local axes.
+
+        Raises
+        ------
+        ValueError
+            If a coordinate is not finite.
+        """
+        x, y, z = location
+        if not all(np.isfinite(value) for value in (x, y, z)):
+            raise ValueError("location must be finite")
+        self._raw.set_location(self._owner.opensim.Vec3(float(x), float(y), float(z)))
+
+    @property
+    def orientation_deg(self) -> tuple[float, float, float]:
+        """This contact geometry's orientation within its attached frame, as X-Y-Z body-fixed Euler degrees.
+
+        OpenSim's own native ``get_orientation()`` property (stored in
+        radians internally), converted to degrees to match every other
+        angle in this package's public API (e.g.
+        :attr:`~opensim_models.components.OffsetFrame.orientation_deg`).
+        """
+        orientation = self._raw.get_orientation()
+        return tuple(float(np.degrees(orientation.get(i))) for i in range(3))
+
+    def set_orientation_deg(self, orientation_deg: tuple[float, float, float]) -> None:
+        """Set this contact geometry's orientation within its attached frame, as X-Y-Z body-fixed Euler degrees.
+
+        Parameters
+        ----------
+        orientation_deg : tuple[float, float, float]
+            ``(x, y, z)`` X-Y-Z body-fixed Euler angles, in degrees, about
+            the attached frame's own axes.
+
+        Raises
+        ------
+        ValueError
+            If a value is not finite.
+        """
+        x, y, z = orientation_deg
+        if not all(np.isfinite(value) for value in (x, y, z)):
+            raise ValueError("orientation_deg must be finite")
+        self._raw.set_orientation(
+            self._owner.opensim.Vec3(*np.radians((float(x), float(y), float(z))))
+        )
 
     @property
     def position_global(self) -> tuple[float, float, float]:
@@ -1431,17 +1505,15 @@ class ContactGeometry(_ComponentWrapper):
 
     @property
     def position_local(self) -> tuple[float, float, float]:
-        """This contact geometry's offset within its attached frame, in metres.
+        """This contact geometry's offset within its attached frame, in metres -- the same value as :attr:`location`.
 
-        A plain re-expression of OpenSim's own ``get_location()`` property
-        (shared by every concrete ``ContactGeometry`` subtype) as a tuple.
-        No ``location``/``set_location`` pair exists yet on this thin
-        wrapper (see the class docstring for why) -- use
-        ``self.raw.get_location()``/``self.raw.set_location(...)`` directly
-        to change it in the meantime.
+        Present alongside :attr:`position_global` purely for naming
+        consistency with every other wrapper's ``position_global``/
+        ``position_local`` pair; prefer :attr:`location`/
+        :meth:`set_location` when working with a ``ContactGeometry``
+        specifically, since those match OpenSim's own terminology.
         """
-        local = self._raw.get_location()
-        return (float(local.get(0)), float(local.get(1)), float(local.get(2)))
+        return self.location
 
     @property
     def parents(self) -> tuple[Any, ...]:
@@ -1452,6 +1524,113 @@ class ContactGeometry(_ComponentWrapper):
         """
         base = self._raw.getFrame().findBaseFrame()
         return (_wrap_base_frame(self._owner, base),)
+
+
+class ContactSphere(ContactGeometry):
+    """Python-friendly wrapper around an ``opensim.ContactSphere``.
+
+    A sphere of :attr:`radius`, centred at :attr:`location` (inherited from
+    :class:`ContactGeometry`) within its attached frame -- built in one
+    call by :func:`~opensim_models.operators.add_contact_sphere`.
+    """
+
+    @property
+    def radius(self) -> float:
+        """Sphere radius, in metres."""
+        return float(self._raw.getRadius())
+
+    def set_radius(self, radius: float) -> None:
+        """Set the sphere radius, in metres.
+
+        Parameters
+        ----------
+        radius : float
+            New radius, in metres. Must be finite and strictly positive.
+
+        Raises
+        ------
+        ValueError
+            If ``radius`` is not finite or not strictly positive.
+        """
+        self._raw.setRadius(_positive(radius))
+
+
+class ContactHalfSpace(ContactGeometry):
+    """Python-friendly wrapper around an ``opensim.ContactHalfSpace``.
+
+    An infinite half-space, split by the plane through :attr:`location`
+    perpendicular to its attached frame's local X axis (after
+    :attr:`orientation_deg`, both inherited from :class:`ContactGeometry`)
+    -- OpenSim's own documented convention: every point with a *positive*
+    local X coordinate (relative to this geometry's own, possibly tilted,
+    frame) is considered solid/inside, so the open, contactable half-space
+    is the local **negative** X side. No extra property beyond
+    :class:`ContactGeometry`'s own -- built in one call by
+    :func:`~opensim_models.operators.add_contact_half_space`.
+    """
+
+
+class ContactMesh(ContactGeometry):
+    """Python-friendly wrapper around an ``opensim.ContactMesh``.
+
+    An arbitrary triangulated surface loaded from :attr:`filename`,
+    positioned at :attr:`location`/:attr:`orientation_deg` (inherited from
+    :class:`ContactGeometry`) within its attached frame -- built in one
+    call by :func:`~opensim_models.operators.add_contact_mesh`.
+    """
+
+    @property
+    def filename(self) -> str:
+        """Path to the mesh file this geometry was loaded from.
+
+        Exactly as stored (OpenSim resolves it relative to the model file's
+        own directory, or its registered geometry search paths, the same
+        way an attached body ``Mesh`` does -- not necessarily an absolute
+        path or one valid relative to the current working directory).
+        """
+        return self._raw.get_filename()
+
+    def set_filename(self, filename: str) -> None:
+        """Set the mesh file this geometry loads its surface from.
+
+        Parameters
+        ----------
+        filename : str
+            Path to the new mesh file (``.obj``/``.vtp``/``.stl``), same
+            resolution rules as :attr:`filename`.
+        """
+        self._raw.set_filename(str(filename))
+
+
+def _wrap_contact_geometry(owner: "OpenSimModel", raw: Any) -> "ContactGeometry":
+    """Wrap ``raw`` (an ``opensim.ContactGeometry``) in the most specific wrapper available.
+
+    Tries each concrete subtype this module has a dedicated wrapper for
+    (:class:`ContactSphere`, :class:`ContactHalfSpace`, :class:`ContactMesh`),
+    via ``safeDownCast`` -- three independent, unrelated concrete OpenSim
+    classes (none a subclass of another), so check order does not matter
+    between them. Falls back to the thin, generic :class:`ContactGeometry`
+    for anything else (e.g. an ``opensim.ContactCylinder``/``ContactTorus``,
+    which this module has no dedicated wrapper for yet).
+
+    Wraps the *result* of ``safeDownCast``, not ``raw`` itself -- see
+    :func:`_wrap_constraint`'s docstring for why (same confirmed gotcha,
+    same fix: a generically-typed ``opensim.ContactGeometry`` proxy fetched
+    back from the model's own ``ContactGeometrySet`` would otherwise make
+    e.g. a :class:`ContactSphere`'s own ``getRadius()`` raise
+    ``AttributeError``).
+    """
+    opensim = owner.opensim
+    sphere = opensim.ContactSphere.safeDownCast(raw)
+    if sphere is not None:
+        return ContactSphere(owner, sphere)
+    half_space = opensim.ContactHalfSpace.safeDownCast(raw)
+    if half_space is not None:
+        return ContactHalfSpace(owner, half_space)
+    mesh = opensim.ContactMesh.safeDownCast(raw)
+    if mesh is not None:
+        return ContactMesh(owner, mesh)
+    return ContactGeometry(owner, raw)
 
 
 class Probe(_ComponentWrapper):

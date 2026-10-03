@@ -188,6 +188,105 @@ def test_attach_component_rejects_an_unknown_joint_type():
         operators.attach_component(model, child.raw, to=parent.raw, joint_type="bogus")
 
 
+def test_attach_component_accepts_an_offset_frame_as_to_with_default_com():
+    # Regression for the _resolve_attachment_point fix: "com" used to
+    # assume `to` was an opensim.Body (get_mass_center()); an OffsetFrame
+    # has no mass at all, so "com" must fall back to its own origin
+    # instead of raising AttributeError.
+    model = make_model()
+    body = add_welded_body(model, "b1", (1.0, 2.0, 3.0))
+    frame = operators.add_offset_frame(model, "f1", body, translation=(0.1, 0.2, 0.3), reinitialize=True)
+    child = add_free_body(model, "child")
+
+    joint = operators.attach_component(model, child.raw, to=frame.raw, joint_type="weld", reinitialize=True)
+
+    assert isinstance(joint, components.Joint)
+    assert model.body("child").position_global == pytest.approx(frame.position_global)
+
+
+# ---------------------------------------------------------------------------
+# Offset frames
+# ---------------------------------------------------------------------------
+
+
+def test_add_offset_frame_builds_and_attaches_an_offset_frame():
+    model = make_model()
+    body = add_welded_body(model, "b1", (1.0, 2.0, 3.0))
+
+    frame = operators.add_offset_frame(
+        model, "f1", body, translation=(0.1, 0.2, 0.3), reinitialize=True
+    )
+
+    assert isinstance(frame, components.OffsetFrame)
+    assert frame.position_local == pytest.approx((0.1, 0.2, 0.3))
+    assert frame.position_global == pytest.approx((1.1, 2.2, 3.3))
+    assert frame.parents == (model.body("b1"),)
+    assert frame.raw.getAbsolutePathString() == "/bodyset/b1/f1"
+
+
+def test_add_offset_frame_applies_orientation_deg():
+    model = make_model()
+    body = add_welded_body(model, "b1", (0.0, 0.0, 0.0))
+
+    frame = operators.add_offset_frame(
+        model, "f1", body, orientation_deg=(10.0, 20.0, 30.0), reinitialize=True
+    )
+
+    assert frame.orientation_deg == pytest.approx((10.0, 20.0, 30.0))
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"translation": (float("nan"), 0.0, 0.0)},
+        {"orientation_deg": (float("inf"), 0.0, 0.0)},
+    ],
+)
+def test_add_offset_frame_rejects_non_finite_values(kwargs):
+    model = make_model()
+    body = add_welded_body(model, "b1", (0.0, 0.0, 0.0))
+
+    with pytest.raises(ValueError, match="finite"):
+        operators.add_offset_frame(model, "bad", body, **kwargs)
+
+
+def test_add_offset_frame_is_usable_as_a_body_downstream():
+    # Confirmed in the task this was added for: a PhysicalOffsetFrame is a
+    # genuine opensim.PhysicalFrame, so it works as `body=` to add_marker/
+    # add_contact_sphere, not just as a read-only landmark.
+    model = make_model()
+    body = add_welded_body(model, "b1", (1.0, 2.0, 3.0))
+    frame = operators.add_offset_frame(model, "f1", body, translation=(0.1, 0.2, 0.3), reinitialize=True)
+
+    marker = operators.add_marker(
+        model, opensim.Marker("m1", frame.raw, opensim.Vec3(0, 0, 0)), reinitialize=True
+    )
+    sphere = operators.add_contact_sphere(model, "cs1", frame, 0.05, reinitialize=True)
+
+    assert marker.position_global == pytest.approx(frame.position_global)
+    assert sphere.position_global == pytest.approx(frame.position_global)
+    assert sphere.parents == (model.body("b1"),)
+
+
+def test_add_offset_frame_survives_add_model_merge():
+    # The key reason this is attached via body.addComponent(frame) rather
+    # than at the model's own root (unlike the internal, unnamed "ground
+    # anchor" add_model builds for its own bookkeeping): a root-level
+    # component falls outside every _MERGE_SETS category and is silently
+    # left behind when merging into another model, but a body's own
+    # subcomponent is cloned right along with it.
+    model = make_model()
+    body = add_welded_body(model, "b1", (1.0, 2.0, 3.0))
+    frame = operators.add_offset_frame(model, "f1", body, translation=(0.1, 0.2, 0.3), reinitialize=True)
+
+    other = make_model()
+    combined = model + other
+
+    found = combined.model.getComponent("/bodyset/b1/f1")
+    combined_frame = components.OffsetFrame(combined, found)
+    assert combined_frame.position_global == pytest.approx(frame.position_global)
+
+
 # ---------------------------------------------------------------------------
 # Forces and muscles
 # ---------------------------------------------------------------------------
@@ -448,6 +547,92 @@ def test_add_muscle_still_returns_a_muscle_not_the_generic_force_or_wrapper():
 
     assert isinstance(muscle, components.Muscle)
     assert type(model.forces["m1"]) is components.Force
+
+
+# ---------------------------------------------------------------------------
+# Contact geometry: build-and-attach (add_contact_sphere/half_space/mesh)
+# ---------------------------------------------------------------------------
+
+
+def test_add_contact_sphere_builds_and_attaches_a_contact_sphere():
+    model = make_model()
+    body = add_welded_body(model, "b1", (1.0, 2.0, 3.0))
+
+    sphere = operators.add_contact_sphere(
+        model, "cs1", body, 0.05, location=(0.1, 0.2, 0.3), reinitialize=True
+    )
+
+    assert isinstance(sphere, components.ContactSphere)
+    assert sphere.radius == pytest.approx(0.05)
+    assert sphere.location == pytest.approx((0.1, 0.2, 0.3))
+    assert sphere.position_local == pytest.approx((0.1, 0.2, 0.3))
+    assert sphere.position_global == pytest.approx((1.1, 2.2, 3.3))
+    assert sphere.parents == (model.body("b1"),)
+    # model.contact_geometries must dispatch to the same specific wrapper.
+    assert type(model.contact_geometries["cs1"]) is components.ContactSphere
+
+
+def test_add_contact_sphere_rejects_non_positive_radius():
+    model = make_model()
+    body = add_welded_body(model, "b1", (0.0, 0.0, 0.0))
+
+    with pytest.raises(ValueError, match="strictly positive"):
+        operators.add_contact_sphere(model, "bad", body, -1.0)
+
+
+def test_add_contact_half_space_builds_and_attaches_a_contact_half_space():
+    model = make_model()
+    body = add_welded_body(model, "b1", (0.0, 0.0, 0.0))
+
+    half_space = operators.add_contact_half_space(
+        model, "chs1", body, orientation_deg=(0.0, 0.0, 90.0), reinitialize=True
+    )
+
+    assert isinstance(half_space, components.ContactHalfSpace)
+    assert half_space.orientation_deg == pytest.approx((0.0, 0.0, 90.0))
+    assert type(model.contact_geometries["chs1"]) is components.ContactHalfSpace
+
+
+def test_add_contact_mesh_builds_and_attaches_a_contact_mesh_without_crashing():
+    # Confirmed directly (see add_contact_mesh's own docstring): OpenSim's
+    # own ContactMesh(filename, location, orientation, frame, name)
+    # all-at-once constructor segfaults the process in this installation,
+    # with both a freshly-written .stl and a bundled .vtp file -- this is
+    # the regression test for the piecemeal workaround add_contact_mesh
+    # uses instead. A crash here would kill the whole test process, not
+    # raise a catchable failure, so passing at all (not just the
+    # assertions below) is itself part of what this test guards.
+    from opensim_models._primitives import write_box_mesh
+
+    model = make_model()
+    body = add_welded_body(model, "b1", (1.0, 2.0, 3.0))
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        mesh_path = Path(tmp_dir) / "box.stl"
+        write_box_mesh(mesh_path, 0.1, 0.1, 0.1)
+
+        mesh = operators.add_contact_mesh(
+            model, "cm1", body, str(mesh_path), location=(0.1, 0.2, 0.3), reinitialize=True
+        )
+
+        assert isinstance(mesh, components.ContactMesh)
+        assert mesh.filename == str(mesh_path)
+        assert mesh.position_local == pytest.approx((0.1, 0.2, 0.3))
+        assert mesh.position_global == pytest.approx((1.1, 2.2, 3.3))
+        assert mesh.parents == (model.body("b1"),)
+        assert type(model.contact_geometries["cm1"]) is components.ContactMesh
+
+
+def test_add_contact_mesh_does_not_validate_the_file_eagerly():
+    # Matches the lazy-resolution behaviour of an attached body Mesh,
+    # documented explicitly in add_contact_mesh's own docstring -- confirmed
+    # directly that even reinitialize=True (which runs initSystem()) does
+    # not raise for a mesh file that doesn't exist.
+    model = make_model()
+    body = add_welded_body(model, "b1", (0.0, 0.0, 0.0))
+
+    mesh = operators.add_contact_mesh(model, "cm1", body, "does_not_exist.obj", reinitialize=True)
+
+    assert mesh.filename == "does_not_exist.obj"
 
 
 # ---------------------------------------------------------------------------

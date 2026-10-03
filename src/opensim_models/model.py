@@ -656,15 +656,21 @@ class OpenSimModel:
         Returns
         -------
         dict[str, components.ContactGeometry]
-            Maps each contact geometry's OpenSim name to a
-            :class:`~opensim_models.components.ContactGeometry` wrapping it
-            (e.g. an ``opensim.ContactSphere``). Rebuilt fresh on every
-            access; empty if the model has no contact geometry.
+            Maps each contact geometry's OpenSim name to the most specific
+            wrapper available for its concrete type --
+            :class:`~opensim_models.components.ContactSphere`,
+            :class:`~opensim_models.components.ContactHalfSpace`,
+            :class:`~opensim_models.components.ContactMesh`, or the thin,
+            generic :class:`~opensim_models.components.ContactGeometry` for
+            anything else -- see
+            :func:`~opensim_models.components._wrap_contact_geometry`.
+            Rebuilt fresh on every access; empty if the model has no
+            contact geometry.
         """
         from . import components
 
         return {
-            item.getName(): components.ContactGeometry(self, item)
+            item.getName(): components._wrap_contact_geometry(self, item)
             for item in _iter_set(self.model.getContactGeometrySet())
         }
 
@@ -2126,6 +2132,63 @@ class OpenSimModel:
             reinitialize=reinitialize,
         )
 
+    def add_offset_frame(
+        self,
+        name: str,
+        body: Any,
+        translation: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        orientation_deg: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        *,
+        reinitialize: bool = False,
+    ) -> "components.OffsetFrame":
+        """Build an ``opensim.PhysicalOffsetFrame`` on ``body`` and add it as a named attachment point, in one call.
+
+        A thin wrapper equivalent to ``operators.add_offset_frame(self,
+        name, body, translation, orientation_deg, ...)``: see
+        :func:`~opensim_models.operators.add_offset_frame` for the full
+        semantics (imported locally, see :meth:`add_body`) -- including why
+        it is attached as a subcomponent of ``body`` itself (confirmed to
+        survive :meth:`add_model`/``+`` merging, unlike a root-level
+        component), and that the result is usable anywhere this package
+        accepts a body/frame (``add_marker``, ``add_contact_sphere``,
+        :meth:`attach_component`'s own ``to=``, ...).
+
+        Parameters
+        ----------
+        name : str
+            Name for the new offset frame.
+        body : opensim.PhysicalFrame or components wrapper
+            The body (or other physical frame) this offset frame is
+            attached to.
+        translation : tuple[float, float, float], optional
+            Offset from ``body``'s own origin, in metres, in ``body``'s own
+            local axes. Defaults to ``(0.0, 0.0, 0.0)``.
+        orientation_deg : tuple[float, float, float], optional
+            Orientation relative to ``body``, as X-Y-Z body-fixed Euler
+            angles in degrees about ``body``'s own axes. Defaults to no
+            tilt.
+        reinitialize : bool, optional
+            When ``True``, rebuild the system immediately after adding,
+            preserving the current posture/velocity. Defaults to
+            ``False``.
+
+        Returns
+        -------
+        components.OffsetFrame
+            The newly created frame, wrapped.
+
+        Raises
+        ------
+        ValueError
+            If ``translation`` or ``orientation_deg`` contains a
+            non-finite value.
+        """
+        from . import operators
+
+        return operators.add_offset_frame(
+            self, name, body, translation, orientation_deg, reinitialize=reinitialize
+        )
+
     def add_force(self, force: Any, *, reinitialize: bool = False) -> "components.Force":
         """Add an already-constructed force/actuator to this model.
 
@@ -2620,6 +2683,152 @@ class OpenSimModel:
             self, contact_geometry, reinitialize=reinitialize
         )
 
+    def add_contact_sphere(
+        self,
+        name: str,
+        body: Any,
+        radius: float,
+        location: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        *,
+        reinitialize: bool = False,
+    ) -> "components.ContactSphere":
+        """Build an ``opensim.ContactSphere`` and attach it to ``body`` in one call.
+
+        A thin wrapper equivalent to ``operators.add_contact_sphere(self,
+        name, body, radius, location, ...)``: see
+        :func:`~opensim_models.operators.add_contact_sphere` for the full
+        semantics (imported locally, see :meth:`add_body`) -- including why
+        this is pure geometry, not by itself a working contact *force* (see
+        :meth:`add_sliding_point_contact` for that).
+
+        Parameters
+        ----------
+        name : str
+            Name for the new contact geometry.
+        body : opensim.PhysicalFrame or components wrapper
+            The body (or other physical frame) this sphere is attached to.
+        radius : float
+            Sphere radius, in metres. Must be finite and strictly positive.
+        location : tuple[float, float, float], optional
+            Sphere centre, in metres, in ``body``'s own local frame.
+            Defaults to ``(0.0, 0.0, 0.0)``.
+        reinitialize : bool, optional
+            When ``True``, rebuild the system immediately after adding,
+            preserving the current posture/velocity. Defaults to
+            ``False``.
+
+        Returns
+        -------
+        components.ContactSphere
+            The newly created contact geometry, wrapped.
+
+        Raises
+        ------
+        ValueError
+            If ``radius`` is not finite or not strictly positive.
+        """
+        from . import operators
+
+        return operators.add_contact_sphere(
+            self, name, body, radius, location, reinitialize=reinitialize
+        )
+
+    def add_contact_half_space(
+        self,
+        name: str,
+        body: Any,
+        location: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        orientation_deg: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        *,
+        reinitialize: bool = False,
+    ) -> "components.ContactHalfSpace":
+        """Build an ``opensim.ContactHalfSpace`` and attach it to ``body`` in one call.
+
+        A thin wrapper equivalent to ``operators.add_contact_half_space(self,
+        name, body, location, orientation_deg, ...)``: see
+        :func:`~opensim_models.operators.add_contact_half_space` for the
+        full semantics (imported locally, see :meth:`add_body`) --
+        including which side (local +X/-X) counts as solid/open, and why
+        this is pure geometry, not by itself a working contact *force*.
+
+        Parameters
+        ----------
+        name : str
+            Name for the new contact geometry.
+        body : opensim.PhysicalFrame or components wrapper
+            The body (or other physical frame) this half-space is attached
+            to.
+        location : tuple[float, float, float], optional
+            A point on the dividing plane, in metres, in ``body``'s own
+            local frame. Defaults to ``(0.0, 0.0, 0.0)``.
+        orientation_deg : tuple[float, float, float], optional
+            Orientation of this geometry's own frame relative to ``body``,
+            as X-Y-Z body-fixed Euler angles in degrees. Defaults to no
+            tilt.
+        reinitialize : bool, optional
+            When ``True``, rebuild the system immediately after adding,
+            preserving the current posture/velocity. Defaults to
+            ``False``.
+
+        Returns
+        -------
+        components.ContactHalfSpace
+            The newly created contact geometry, wrapped.
+        """
+        from . import operators
+
+        return operators.add_contact_half_space(
+            self, name, body, location, orientation_deg, reinitialize=reinitialize
+        )
+
+    def add_contact_mesh(
+        self,
+        name: str,
+        body: Any,
+        mesh_file: str,
+        location: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        orientation_deg: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        *,
+        reinitialize: bool = False,
+    ) -> "components.ContactMesh":
+        """Build an ``opensim.ContactMesh`` and attach it to ``body`` in one call.
+
+        A thin wrapper equivalent to ``operators.add_contact_mesh(self,
+        name, body, mesh_file, location, orientation_deg, ...)``: see
+        :func:`~opensim_models.operators.add_contact_mesh` for the full
+        semantics (imported locally, see :meth:`add_body`) -- including why
+        this is pure geometry, not by itself a working contact *force*.
+
+        Parameters
+        ----------
+        name : str
+            Name for the new contact geometry.
+        body : opensim.PhysicalFrame or components wrapper
+            The body (or other physical frame) this mesh is attached to.
+        mesh_file : str
+            Path to the mesh file to load the surface from.
+        location : tuple[float, float, float], optional
+            Mesh origin, in metres, in ``body``'s own local frame. Defaults
+            to ``(0.0, 0.0, 0.0)``.
+        orientation_deg : tuple[float, float, float], optional
+            Mesh orientation relative to ``body``, as X-Y-Z body-fixed
+            Euler angles in degrees. Defaults to no tilt.
+        reinitialize : bool, optional
+            When ``True``, rebuild the system immediately after adding,
+            preserving the current posture/velocity. Defaults to
+            ``False``.
+
+        Returns
+        -------
+        components.ContactMesh
+            The newly created contact geometry, wrapped.
+        """
+        from . import operators
+
+        return operators.add_contact_mesh(
+            self, name, body, mesh_file, location, orientation_deg, reinitialize=reinitialize
+        )
+
     def add_sliding_point_contact(
         self,
         name: str,
@@ -2699,9 +2908,10 @@ class OpenSimModel:
 
         Returns
         -------
-        components.Force
-            The newly created ``ExponentialContactForce``, wrapped in the
-            thin, generic :class:`~opensim_models.components.Force`.
+        components.ExponentialContactForce
+            The newly created ``ExponentialContactForce``, wrapped in
+            :class:`~opensim_models.components.ExponentialContactForce`,
+            which exposes ``point_global``/``plane_point_global``.
 
         Raises
         ------

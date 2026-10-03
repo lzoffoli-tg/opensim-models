@@ -1,9 +1,30 @@
-"""Add a sliding point-contact force between a point on one body and a
-flat plane fixed on another -- a real, physical (force-based) alternative
-to :func:`~opensim_models.operators.constraints.add_point_on_plane_constraint`
+"""Build-and-attach functions for contact geometry (``add_contact_sphere``,
+``add_contact_half_space``, ``add_contact_mesh``) and a sliding point-contact
+force between a point on one body and a flat plane fixed on another
+(``add_sliding_point_contact``) -- a real, physical (force-based)
+alternative to
+:func:`~opensim_models.operators.constraints.add_point_on_plane_constraint`
 for the same "point resting on, and free to slide along, a flat surface"
 scenario (e.g. an acromion landmark resting on a shoulder pad's face, or a
-pelvis/torso landmark resting on a backrest)."""
+pelvis/torso landmark resting on a backrest).
+
+**The contact geometry functions and ``add_sliding_point_contact`` solve
+different problems -- read this before reaching for ``ContactSphere``/
+``ContactHalfSpace`` expecting a working force-based contact.** A
+``ContactGeometry`` (sphere/half-space/mesh) is pure, inert shape: adding
+one to a body is always safe and has no dynamics implications by itself
+(see :func:`add_contact_sphere`/:func:`add_contact_half_space`/
+:func:`add_contact_mesh` below). Pairing one with ``HuntCrossleyForce``/
+``ElasticFoundationForce`` to turn it into an actual contact force is the
+one path this package does **not** support: see
+:func:`add_sliding_point_contact`'s own docstring ("Why
+``ExponentialContactForce``, not ``HuntCrossleyForce``") for the confirmed
+native-crash reason -- that nested ``ContactParameters`` class is not
+reachable from Python in this installation, and the flattened setters that
+look like a substitute segfault at the acceleration stage.
+``ExponentialContactForce`` (built by :func:`add_sliding_point_contact`,
+needing no ``ContactGeometry`` at all) remains the only confirmed-working
+force-based contact in this installation."""
 
 from __future__ import annotations
 
@@ -15,7 +36,218 @@ from .. import components
 from ._shared import add_component, _unwrap
 from .constraints import _local_to_ground
 
-__all__ = ["add_sliding_point_contact"]
+__all__ = [
+    "add_contact_sphere",
+    "add_contact_half_space",
+    "add_contact_mesh",
+    "add_sliding_point_contact",
+]
+
+
+def _positive(value: float) -> float:
+    if not np.isfinite(value) or value <= 0:
+        raise ValueError(f"value must be strictly positive, got {value!r}")
+    return float(value)
+
+
+def add_contact_sphere(
+    model: "OpenSimModel",
+    name: str,
+    body: Any,
+    radius: float,
+    location: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    *,
+    reinitialize: bool = False,
+) -> Any:
+    """Build an ``opensim.ContactSphere`` and attach it to ``body`` in one call.
+
+    Pure geometry, not a force: adding this (or any ``ContactGeometry``)
+    never, by itself, makes ``body`` actually collide with anything -- see
+    this module's own docstring ("The contact geometry functions and
+    ``add_sliding_point_contact`` solve different problems") before
+    reaching for ``HuntCrossleyForce``/``ElasticFoundationForce`` to pair
+    with it; that combination is confirmed not to work in this
+    installation. Use :func:`add_sliding_point_contact` instead for an
+    actual, working contact force.
+
+    Parameters
+    ----------
+    model : OpenSimModel
+        Model to add the contact sphere to.
+    name : str
+        Name for the new contact geometry.
+    body : opensim.PhysicalFrame or components wrapper
+        The body (or other physical frame) this sphere is attached to.
+    radius : float
+        Sphere radius, in metres. Must be finite and strictly positive.
+    location : tuple[float, float, float], optional
+        Sphere centre, in metres, in ``body``'s own local frame. Defaults
+        to ``(0.0, 0.0, 0.0)``.
+    reinitialize : bool, optional
+        See :func:`~opensim_models.operators._shared.add_component`.
+
+    Returns
+    -------
+    components.ContactSphere
+        The newly created contact geometry, wrapped in
+        :class:`~opensim_models.components.ContactSphere`.
+
+    Raises
+    ------
+    ValueError
+        If ``radius`` is not finite or not strictly positive.
+    """
+    body = _unwrap(body)
+    sphere = model.opensim.ContactSphere(
+        _positive(radius), model.opensim.Vec3(*location), body, name
+    )
+    add_component(model, "contact_geometry", sphere, reinitialize=reinitialize)
+    return components._wrap_contact_geometry(model, sphere)
+
+
+def add_contact_half_space(
+    model: "OpenSimModel",
+    name: str,
+    body: Any,
+    location: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    orientation_deg: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    *,
+    reinitialize: bool = False,
+) -> Any:
+    """Build an ``opensim.ContactHalfSpace`` and attach it to ``body`` in one call.
+
+    Pure geometry, not a force -- see :func:`add_contact_sphere`'s own
+    warning (identical here) about pairing this with
+    ``HuntCrossleyForce``/``ElasticFoundationForce``; use
+    :func:`add_sliding_point_contact` for an actual, working contact force
+    instead.
+
+    Every point with a *positive* local X coordinate (relative to this
+    geometry's own frame, i.e. ``body``'s frame tilted by
+    ``orientation_deg``) is OpenSim's own documented convention for
+    "solid/inside" -- so the open, contactable half-space extends along
+    the local **negative** X direction from ``location``. Point
+    ``orientation_deg`` so local -X faces the side contact should occur on
+    (e.g. tilt by 90 degrees about Z to make a half-space whose open side
+    faces along what was the local +Y axis).
+
+    Parameters
+    ----------
+    model : OpenSimModel
+        Model to add the contact half-space to.
+    name : str
+        Name for the new contact geometry.
+    body : opensim.PhysicalFrame or components wrapper
+        The body (or other physical frame) this half-space is attached to.
+    location : tuple[float, float, float], optional
+        A point on the dividing plane, in metres, in ``body``'s own local
+        frame. Defaults to ``(0.0, 0.0, 0.0)``.
+    orientation_deg : tuple[float, float, float], optional
+        Orientation of this geometry's own frame relative to ``body``, as
+        X-Y-Z body-fixed Euler angles in degrees -- see above for how this
+        determines which side is open/contactable. Defaults to no tilt.
+    reinitialize : bool, optional
+        See :func:`~opensim_models.operators._shared.add_component`.
+
+    Returns
+    -------
+    components.ContactHalfSpace
+        The newly created contact geometry, wrapped in
+        :class:`~opensim_models.components.ContactHalfSpace`.
+    """
+    body = _unwrap(body)
+    half_space = model.opensim.ContactHalfSpace(
+        model.opensim.Vec3(*location),
+        model.opensim.Vec3(*np.deg2rad(orientation_deg)),
+        body,
+        name,
+    )
+    add_component(model, "contact_geometry", half_space, reinitialize=reinitialize)
+    return components._wrap_contact_geometry(model, half_space)
+
+
+def add_contact_mesh(
+    model: "OpenSimModel",
+    name: str,
+    body: Any,
+    mesh_file: str,
+    location: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    orientation_deg: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    *,
+    reinitialize: bool = False,
+) -> Any:
+    """Build an ``opensim.ContactMesh`` and attach it to ``body`` in one call.
+
+    Pure geometry, not a force -- see :func:`add_contact_sphere`'s own
+    warning (identical here) about pairing this with
+    ``HuntCrossleyForce``/``ElasticFoundationForce``; use
+    :func:`add_sliding_point_contact` for an actual, working contact force
+    instead (that function takes a flat plane, not an arbitrary mesh, as
+    its contact surface -- there is no mesh-shaped equivalent in this
+    package yet).
+
+    **A confirmed native-crash gotcha this function exists specifically to
+    avoid.** ``opensim.ContactMesh``'s own convenience constructor --
+    ``ContactMesh(filename, location, orientation, frame, name)``, the
+    obvious one-call way to build it, used by every other
+    ``add_contact_*``/``add_*_body`` function in this package for its own
+    primitive's equivalent constructor -- segfaults the process (not a
+    catchable exception) the moment it is called, confirmed directly and
+    reproduced with *both* an ``.stl`` file (written by this package's own
+    mesh writer) and a bundled ``.vtp`` file (one of ``User``'s own,
+    confirmed to otherwise load fine as body-attached geometry), on an
+    otherwise completely ordinary one-body model. The crash is specific to
+    that all-at-once constructor overload: building the same
+    ``ContactMesh`` piecemeal instead -- default-construct, then
+    ``set_filename``/``set_location``/``set_orientation``/``setName``/
+    ``connectSocket_frame`` individually -- is confirmed to work
+    correctly, with identical resulting geometry (same ``location``/
+    ``filename``/ground-frame position read back afterward), and is what
+    this function actually does under the hood.
+
+    Parameters
+    ----------
+    model : OpenSimModel
+        Model to add the contact mesh to.
+    name : str
+        Name for the new contact geometry.
+    body : opensim.PhysicalFrame or components wrapper
+        The body (or other physical frame) this mesh is attached to.
+    mesh_file : str
+        Path to the mesh file (``.obj``/``.vtp``/``.stl``) to load the
+        surface from -- not validated to exist by this function (confirmed
+        directly: even ``initSystem()`` succeeds with a nonexistent path,
+        via the piecemeal construction this function uses -- same lazy
+        resolution as an attached body ``Mesh``).
+    location : tuple[float, float, float], optional
+        Mesh origin, in metres, in ``body``'s own local frame. Defaults to
+        ``(0.0, 0.0, 0.0)``.
+    orientation_deg : tuple[float, float, float], optional
+        Mesh orientation relative to ``body``, as X-Y-Z body-fixed Euler
+        angles in degrees. Defaults to no tilt.
+    reinitialize : bool, optional
+        See :func:`~opensim_models.operators._shared.add_component`.
+
+    Returns
+    -------
+    components.ContactMesh
+        The newly created contact geometry, wrapped in
+        :class:`~opensim_models.components.ContactMesh`.
+    """
+    body = _unwrap(body)
+    opensim = model.opensim
+    # Built piecemeal (empty constructor + individual setters), NOT via
+    # ContactMesh(filename, location, orientation, frame, name) -- see the
+    # docstring above for the confirmed segfault that all-at-once
+    # constructor overload triggers in this installation.
+    mesh = opensim.ContactMesh()
+    mesh.set_filename(str(mesh_file))
+    mesh.set_location(opensim.Vec3(*location))
+    mesh.set_orientation(opensim.Vec3(*np.deg2rad(orientation_deg)))
+    mesh.setName(name)
+    mesh.connectSocket_frame(body)
+    add_component(model, "contact_geometry", mesh, reinitialize=reinitialize)
+    return components._wrap_contact_geometry(model, mesh)
 
 
 def add_sliding_point_contact(

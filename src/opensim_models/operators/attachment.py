@@ -22,9 +22,24 @@ def _joint_owning_body(model: "OpenSimModel", body: Any) -> Any | None:
 
 
 def _resolve_attachment_point(body: Any, point: Any) -> tuple[float, float, float]:
-    """Resolve ``point`` (``"com"`` or an explicit ``(x, y, z)``) against ``body``'s own local frame."""
+    """Resolve ``point`` (``"com"`` or an explicit ``(x, y, z)``) against ``body``'s own local frame.
+
+    ``"com"`` falls back to ``(0.0, 0.0, 0.0)`` when ``body`` has no
+    ``get_mass_center()`` of its own (confirmed directly: an
+    ``opensim.PhysicalOffsetFrame`` -- e.g. one built by
+    :func:`~opensim_models.operators.contact.add_offset_frame`, a
+    perfectly valid ``to=``/``parent_point=`` target here -- has no mass
+    at all, only a placement) -- its own origin is the natural
+    "centre" to default to, and happens to coincide with an actual
+    ``opensim.Body``'s mass centre for every body this package itself
+    builds (``add_body``/the primitive-shape functions all use
+    ``mass_center=(0, 0, 0)``).
+    """
     if point == "com":
-        center = body.get_mass_center()
+        get_mass_center = getattr(body, "get_mass_center", None)
+        if get_mass_center is None:
+            return (0.0, 0.0, 0.0)
+        center = get_mass_center()
         return (center.get(0), center.get(1), center.get(2))
     return tuple(float(value) for value in point)
 
@@ -63,13 +78,21 @@ def attach_component(
     child : opensim.PhysicalFrame
         The body (already in ``model``) to re-attach.
     to : opensim.PhysicalFrame
-        The body (already in ``model``) ``child`` attaches to.
+        The body (already in ``model``) ``child`` attaches to -- an
+        ``opensim.PhysicalOffsetFrame`` (e.g. one built by
+        :func:`~opensim_models.operators.contact.add_offset_frame`) works
+        just as well here, confirmed directly: it is a ``PhysicalFrame``
+        like any other, so ``child`` ends up attached at that exact named
+        point/orientation on whatever body the frame itself belongs to.
     child_point : ``"com"`` or tuple[float, float, float], optional
         Attachment point on ``child``, in its own local frame, in metres.
         ``"com"`` (default) uses ``child``'s centre of mass.
     parent_point : ``"com"`` or tuple[float, float, float], optional
         Attachment point on ``to``, in its own local frame, in metres.
-        ``"com"`` (default) uses ``to``'s centre of mass.
+        ``"com"`` (default) uses ``to``'s centre of mass -- or, when ``to``
+        has no mass centre of its own (e.g. a ``PhysicalOffsetFrame``, as
+        opposed to an ``opensim.Body``), ``to``'s own origin, i.e.
+        ``(0.0, 0.0, 0.0)`` (see :func:`_resolve_attachment_point`).
     child_orientation_deg, parent_orientation_deg : tuple[float, float, float], optional
         Orientation of the new joint's frame on each side, as X-Y-Z
         body-fixed Euler degrees about that side's own local axes.

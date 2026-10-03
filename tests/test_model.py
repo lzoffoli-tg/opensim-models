@@ -958,3 +958,48 @@ def test_translate_not_inplace_returns_a_translated_copy_and_leaves_self_untouch
     )
     copy_body_position = translated_copy.body("b1").raw.getPositionInGround(translated_copy.state)
     assert tuple(copy_body_position.to_numpy()) == pytest.approx((1.0, 2.0, 0.0), abs=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# Contact geometry convenience methods (delegation to operators)
+# ---------------------------------------------------------------------------
+
+
+def test_add_contact_sphere_delegates_to_operators():
+    from opensim_models import components
+
+    model, body = build_one_body_model(position=(0.0, 0.0, 0.0))
+
+    sphere = model.add_contact_sphere("cs1", body, 0.05, location=(0.1, 0.2, 0.3), reinitialize=True)
+
+    assert isinstance(sphere, components.ContactSphere)
+    assert sphere.radius == pytest.approx(0.05)
+    assert sphere.location == pytest.approx((0.1, 0.2, 0.3))
+    assert type(model.contact_geometries["cs1"]) is components.ContactSphere
+
+
+def test_add_contact_half_space_delegates_to_operators():
+    from opensim_models import components
+
+    model, body = build_one_body_model(position=(0.0, 0.0, 0.0))
+
+    half_space = model.add_contact_half_space(
+        "chs1", body, orientation_deg=(0.0, 0.0, 90.0), reinitialize=True
+    )
+
+    assert isinstance(half_space, components.ContactHalfSpace)
+    assert half_space.orientation_deg == pytest.approx((0.0, 0.0, 90.0))
+    assert type(model.contact_geometries["chs1"]) is components.ContactHalfSpace
+
+
+def test_add_offset_frame_delegates_to_operators():
+    from opensim_models import components
+
+    model, body = build_one_body_model(position=(1.0, 2.0, 3.0))
+
+    frame = model.add_offset_frame("f1", body, translation=(0.1, 0.2, 0.3), reinitialize=True)
+
+    assert isinstance(frame, components.OffsetFrame)
+    assert frame.position_local == pytest.approx((0.1, 0.2, 0.3))
+    assert frame.position_global == pytest.approx((1.1, 2.2, 3.3))
+    assert frame.parents == (model.body("b1"),)

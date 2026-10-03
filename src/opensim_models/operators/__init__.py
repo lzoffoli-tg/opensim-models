@@ -41,13 +41,16 @@ points -- e.g. two values returned by
 properties elsewhere in :mod:`opensim_models.components`.
 
 Organized one file per component category (``bodies``, ``joints``,
-``attachment``, ``primitives``, ``forces``, ``markers``, ``constraints``,
-``auxiliary`` for controllers/contact-geometry/probes, ``contact`` for the
-real, force-based ``add_sliding_point_contact``) plus ``rotation``/
-``translation`` and their shared ``_spatial`` helpers, and ``geometry`` for
-``euclidean_distance`` -- this module just re-exports every public name
-from all of them, so ``opensim_models.operators.<name>`` resolves exactly
-as it did when this was a single flat file.
+``attachment``, ``frames`` for ``add_offset_frame``, ``primitives``,
+``forces``, ``markers``, ``constraints``,
+``auxiliary`` for the generic ``add_contact_geometry``/controllers/probes,
+``contact`` for the named contact-geometry builders (``add_contact_sphere``/
+``add_contact_half_space``/``add_contact_mesh``) and the real, force-based
+``add_sliding_point_contact``) plus ``rotation``/``translation`` and their
+shared ``_spatial`` helpers, and ``geometry`` for ``euclidean_distance`` --
+this module just re-exports every public name from all of them, so
+``opensim_models.operators.<name>`` resolves exactly as it did when this
+was a single flat file.
 """
 
 from __future__ import annotations
@@ -66,6 +69,7 @@ from .joints import (
     add_weld_joint,
 )
 from .attachment import attach_component
+from .frames import add_offset_frame
 from .primitives import add_box_body, add_cylinder_body, add_sphere_body
 from .forces import add_force, remove_force, add_muscle, remove_muscle
 from .markers import add_marker, remove_marker
@@ -85,7 +89,12 @@ from .auxiliary import (
     add_probe,
     remove_probe,
 )
-from .contact import add_sliding_point_contact
+from .contact import (
+    add_contact_sphere,
+    add_contact_half_space,
+    add_contact_mesh,
+    add_sliding_point_contact,
+)
 from .rotation import rotate_object
 from .translation import translate_object
 from .geometry import euclidean_distance
@@ -103,6 +112,7 @@ __all__ = [
     "add_slider_joint",
     "add_weld_joint",
     "attach_component",
+    "add_offset_frame",
     "add_box_body",
     "add_cylinder_body",
     "add_sphere_body",
@@ -124,6 +134,9 @@ __all__ = [
     "remove_contact_geometry",
     "add_probe",
     "remove_probe",
+    "add_contact_sphere",
+    "add_contact_half_space",
+    "add_contact_mesh",
     "add_sliding_point_contact",
     "rotate_object",
     "translate_object",
