@@ -19,7 +19,7 @@ component readout needs. The tradeoff is reimplementing geometry loading
 (meshes and the native ``Brick``/``Cylinder``/``Sphere`` primitives) and
 visuals that the Simbody visualizer provided for free; this module covers
 only what :meth:`OpenSimModel.show` and the playback window
-(:mod:`opensim_models._player`) actually need.
+(:mod:`opensim_models._gui.player`) actually need.
 
 The interactor's own blocking ``Start()`` event loop is never used: it runs
 a native Win32 message loop in C++ that does not release the GIL, so even
@@ -28,7 +28,7 @@ process (confirmed directly -- a plain
 ``threading.Thread(target=interactor.Start).start()`` hangs the calling
 thread's very next line). Instead, :meth:`VTKVisualizer.process_events`
 wraps ``vtkRenderWindowInteractor.ProcessEvents()``, a single non-blocking
-pump of pending window messages; :mod:`opensim_models._player` calls it
+pump of pending window messages; :mod:`opensim_models._gui.player` calls it
 once per tick of its own Tk ``after()`` loop, on the same thread as Tk's
 event processing, so one thread drives both GUIs without contention.
 
@@ -36,7 +36,7 @@ For the same reason, a ``VTKVisualizer`` must be *constructed* on that
 same thread too, not handed over from another one afterward: its native
 window is thread-affine (a plain Win32 rule -- a window's messages are
 only ever delivered to the thread that created it), and
-:mod:`opensim_models._player` additionally reparents that window into its
+:mod:`opensim_models._gui.player` additionally reparents that window into its
 own Tk frame, a call that blocks waiting for the *creating* thread to
 process it -- which deadlocks if that thread is the caller's and has
 already moved on past ``show()``, as confirmed directly. ``_player.py``'s
@@ -57,12 +57,12 @@ from __future__ import annotations
 import threading
 from typing import Any
 
-from . import _geometry
+from .. import _geometry
 
 __all__ = ["VTKVisualizer", "DEFAULT_SIZE", "VIEW_NAMES"]
 
 #: Initial render window size in pixels, as (width, height). Exposed so
-#: :mod:`opensim_models._player` can size its viewer frame to match before
+#: :mod:`opensim_models._gui.player` can size its viewer frame to match before
 #: a ``VTKVisualizer`` even exists (it must embed that frame's handle
 #: *during* construction -- see ``VTKVisualizer.__init__``'s ``embed``
 #: parameter -- so construction can't happen first).
@@ -102,6 +102,50 @@ _VIEW_DIRECTIONS: dict[str, tuple[tuple[float, float, float], tuple[float, float
 VIEW_NAMES = ("front", "back", "left", "right", "top", "bottom")
 
 
+def _build_interactor_style(vtk: Any) -> Any:
+    """Build the camera interactor style: left-drag rotates, Ctrl+left-drag pans, wheel zooms.
+
+    A thin remap of ``vtkInteractorStyleTrackballCamera``'s own modifier ->
+    action dispatch (which already reserves Shift+left for Pan and plain
+    Ctrl+left for Spin): a Ctrl-held left-drag is presented to the base
+    implementation as if Shift were held instead (and Ctrl released),
+    since that is the branch it already treats as Pan -- reusing its own
+    ``FindPokedRenderer``/``GrabFocus``/``StartPan`` machinery rather than
+    reimplementing it. The real modifier state is restored immediately
+    after, since the base class's ``OnMouseMove``/``OnLeftButtonUp`` only
+    ever dispatch off ``State`` (set by ``StartPan``/``StartRotate``
+    during ``OnLeftButtonDown``), never by re-reading modifier keys
+    themselves mid-drag. Plain rotate and mouse-wheel zoom are left as the
+    base class's own default behaviour unchanged -- which already does
+    nothing on a plain click (rotation amount comes purely from mouse-move
+    delta while the button is down, so zero movement is zero rotation).
+
+    The returned style must be kept alive for as long as it's installed on
+    an interactor (e.g. as an instance attribute): VTK's Python-override
+    dispatch for a virtual method like ``OnLeftButtonDown`` requires the
+    Python wrapper object itself to still be alive, independently of the
+    underlying C++ object's own reference count.
+    """
+
+    class _CameraInteractorStyle(vtk.vtkInteractorStyleTrackballCamera):
+        def OnLeftButtonDown(self) -> None:
+            interactor = self.GetInteractor()
+            ctrl = bool(interactor.GetControlKey())
+            shift = bool(interactor.GetShiftKey())
+            if ctrl and not shift:
+                interactor.SetControlKey(0)
+                interactor.SetShiftKey(1)
+                try:
+                    super().OnLeftButtonDown()
+                finally:
+                    interactor.SetControlKey(1)
+                    interactor.SetShiftKey(0)
+            else:
+                super().OnLeftButtonDown()
+
+    return _CameraInteractorStyle()
+
+
 class VTKVisualizer:
     """Opens an interactive VTK window rendering ``model``'s current geometry.
 
@@ -110,14 +154,14 @@ class VTKVisualizer:
     once at construction; call :meth:`show` after any posture/structural
     change to re-sync every actor's transform and redraw (this mirrors
     ``opensim.ModelVisualizer.show(state)``'s own signature, so
-    :mod:`opensim_models._player` drives either one the same way).
+    :mod:`opensim_models._gui.player` drives either one the same way).
 
     Construction returns as soon as the first frame is rendered; the
     window stays interactive (camera orbit *and* hover tracking) only for
     as long as something calls :meth:`process_events` regularly (see that
     method, and the module docstring, for why that is a deliberate
     non-blocking pump rather than the interactor's own ``Start()``) --
-    :mod:`opensim_models._player` is what actually does this, once per
+    :mod:`opensim_models._gui.player` is what actually does this, once per
     tick, for every ``VTKVisualizer`` :meth:`~opensim_models.model.OpenSimModel.show`
     creates.
 
@@ -131,7 +175,7 @@ class VTKVisualizer:
     embed : callable or None, optional
         If given, called once, with this visualizer's native window
         handle (:meth:`get_window_id`'s value), after the window exists
-        but before its first paint -- :mod:`opensim_models._player`
+        but before its first paint -- :mod:`opensim_models._gui.player`
         passes a callback that reparents it into its own Tk frame right
         then.
 
@@ -160,15 +204,21 @@ class VTKVisualizer:
         self._render_window.SetWindowName(self._window_title())
         self._interactor = vtk.vtkRenderWindowInteractor()
         self._interactor.SetRenderWindow(self._render_window)
+        # kept as an instance attribute (not a local), since VTK's Python
+        # dispatch into an overridden virtual method requires the Python
+        # wrapper object itself to stay alive for as long as it is
+        # installed on the interactor -- see _build_interactor_style.
+        self._interactor_style = _build_interactor_style(vtk)
+        self._interactor.SetInteractorStyle(self._interactor_style)
         self._picker = vtk.vtkCellPicker()
         self._picker.SetTolerance(0.0005)
 
         # (opensim.Body, vtkActor) pairs, to resync transforms in show();
-        # actor -> (model name, component/body name), for hover_text().
+        # actor -> (model name, component/body name), for hover_info().
         self._actor_bodies: list[tuple[Any, Any]] = []
         self._actor_components: dict[Any, tuple[str, str]] = {}
         self._hover_lock = threading.Lock()
-        self._hover_text = ""
+        self._hover_info: tuple[str, float, float, float] | None = None
 
         # (opensim.Muscle, vtkPolyDataMapper, vtkActor) triples -- unlike a
         # body's fixed-shape mesh (just re-transformed in show()), a
@@ -414,38 +464,63 @@ class VTKVisualizer:
         if actor in self._actor_components:
             model_name, component_name = self._actor_components[actor]
             position = self._picker.GetPickPosition()
-            text = (
-                f"{model_name}-{component_name} "
-                f"({position[0]:.3f}, {position[1]:.3f}, {position[2]:.3f})"
-            )
+            info = (f"{model_name}-{component_name}", position[0], position[1], position[2])
         else:
-            text = ""
+            info = None
         with self._hover_lock:
-            self._hover_text = text
+            self._hover_info = info
 
     def _on_mouse_leave(self, _obj: Any, _event: str) -> None:
         with self._hover_lock:
-            self._hover_text = ""
+            self._hover_info = None
 
-    def hover_text(self) -> str:
-        """Return the current hover readout: ``"<model>-<component> (x, y, z)"``.
+    def hover_info(self) -> tuple[str, float, float, float] | None:
+        """Return ``(label, x, y, z)`` for whatever the mouse is currently over.
 
-        Empty when the pointer is outside the window or not over a
-        rendered piece of geometry. The lock guarding this is a leftover
-        safety net from the previous threaded design, now harmless rather
-        than load-bearing: the mouse-move observer only ever fires inside
-        :meth:`process_events`, called from the same thread that reads
-        this back (see :mod:`opensim_models._player`'s tick loop).
+        ``None`` when the pointer is outside the window or not over a
+        rendered piece of geometry; ``label`` is ``"<model>-<component>"``,
+        ``(x, y, z)`` its ground-frame pick position, in metres. The lock
+        guarding this is a leftover safety net from the previous threaded
+        design, now harmless rather than load-bearing: the mouse-move
+        observer only ever fires inside :meth:`process_events`, called
+        from the same thread that reads this back (see
+        :mod:`opensim_models._gui.player`'s tick loop, which renders it as
+        a floating tooltip next to the cursor via
+        :class:`~opensim_models._gui.tooltip.HoverTooltip`).
         """
         with self._hover_lock:
-            return self._hover_text
+            return self._hover_info
+
+    def capture_frame(self) -> Any:
+        """Return the current 3D view as an ``(height, width, 3)`` uint8 RGB array.
+
+        Used by :mod:`opensim_models._gui.export` to save the view as a
+        PNG, or a sequence of these (one per sampled motion time) as an
+        MP4. Captures whatever is in the render window *right now* -- call
+        :meth:`show` first if ``state`` just changed. Row 0 is the top of
+        the image (standard image-array convention): VTK's own pixel
+        buffer is bottom-up, flipped here so callers don't have to know
+        that.
+        """
+        import numpy as np
+        from vtkmodules.util.numpy_support import vtk_to_numpy
+
+        window_to_image = self._vtk.vtkWindowToImageFilter()
+        window_to_image.SetInput(self._render_window)
+        window_to_image.SetInputBufferTypeToRGB()
+        window_to_image.ReadFrontBufferOff()
+        window_to_image.Update()
+        image_data = window_to_image.GetOutput()
+        width, height, _ = image_data.GetDimensions()
+        array = vtk_to_numpy(image_data.GetPointData().GetScalars()).reshape(height, width, 3)
+        return np.flipud(array)
 
     def show(self, state: Any) -> None:
         """Sync every actor's transform from ``state`` and redraw.
 
         Same signature as ``opensim.ModelVisualizer.show(state)``, so
         anything already written against that (e.g.
-        :mod:`opensim_models._player`) drives this the same way.
+        :mod:`opensim_models._gui.player`) drives this the same way.
         """
         self._model.model.realizePosition(state)
         for body, actor in self._actor_bodies:
@@ -472,7 +547,7 @@ class VTKVisualizer:
         docstring for why that cannot run on a background thread here).
         Must be called repeatedly, from whatever thread owns this
         process's single native event-pump duty, for the window to stay
-        responsive at all; :mod:`opensim_models._player` calls it once per
+        responsive at all; :mod:`opensim_models._gui.player` calls it once per
         tick of its own Tk loop.
         """
         self._interactor.ProcessEvents()
@@ -485,7 +560,7 @@ class VTKVisualizer:
     def resize(self, width: int, height: int) -> None:
         """Resize the render window to ``(width, height)`` pixels and redraw.
 
-        Called by :mod:`opensim_models._player` whenever the Tk frame this
+        Called by :mod:`opensim_models._gui.player` whenever the Tk frame this
         window is embedded into is resized, to keep the two in sync.
         """
         self._render_window.SetSize(width, height)
@@ -494,7 +569,7 @@ class VTKVisualizer:
     def get_window_id(self) -> Any:
         """Return the native window handle (``HWND`` on Windows).
 
-        For :mod:`opensim_models._player` to embed this window directly
+        For :mod:`opensim_models._gui.player` to embed this window directly
         into its own Tk frame -- no window search needed (unlike the old
         Simbody visualizer, a separate process), since this window was
         created in this same process.
@@ -506,6 +581,6 @@ class VTKVisualizer:
 
         Idempotent. There is no interactor loop to stop (see the module
         docstring): :meth:`process_events` simply stops being called once
-        the owning :mod:`opensim_models._player` window closes.
+        the owning :mod:`opensim_models._gui.player` window closes.
         """
         self._render_window.Finalize()

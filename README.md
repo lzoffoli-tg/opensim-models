@@ -9,11 +9,36 @@ Package Python per costruire e comporre modelli OpenSim. `OpenSimModel` è una f
 ```text
 src/opensim_models/
 	model.py                       # OpenSimModel: facade generica, show(), composizione di modelli, OpenSimModel.from_step
-	operators.py                   # add_*/remove_* generici per corpi, giunti, forze/muscoli, marker, vincoli, ...
+	_registry.py                   # interno: registro Body->OpenSimModel e iterazione generica di un opensim.Set, condivisi da model.py e operators/
+	operators/                     # add_*/remove_* generici per corpi, giunti, forze/muscoli, marker, vincoli, ... (package, un file per categoria)
+		__init__.py                 # ri-esporta tutti i nomi pubblici: l'import `from opensim_models import operators` non cambia
+		bodies.py                   # add_body/remove_body
+		joints.py                   # add_joint/remove_joint e i costruttori nominati (add_free_joint, add_pin_joint, ...)
+		attachment.py               # attach_component
+		primitives.py               # add_box_body/add_cylinder_body/add_sphere_body
+		forces.py                   # add_force/remove_force, add_muscle/remove_muscle
+		markers.py                  # add_marker/remove_marker
+		constraints.py              # add_constraint e i costruttori nominati (add_weld_constraint, ...)
+		auxiliary.py                # controller/contact-geometry/probe
+		rotation.py / translation.py  # rotate_object/translate_object
+		_shared.py / _spatial.py    # interno: helper generici condivisi fra i file sopra
 	_cad_import.py                 # interno: lettura STEP/STP e generazione mesh per OpenSimModel.from_step
+	_primitives.py                 # interno: writer mesh STL per box/cilindro/sfera, usati da operators/primitives.py e da components/box.py
+	_geometry.py                   # interno: costruzione di una sorgente VTK (mesh/Brick/Cylinder/Sphere) e dei suoi bounds, condivisa da _gui/visualizer.py e components.Body.corners
+	_gui/                          # interno: tutta la finestra interattiva aperta da show() -- mai importato direttamente dai consumer del package
+		__init__.py
+		visualizer.py               # vista 3D interattiva (VTK), incluso lo stile di navigazione della camera e capture_frame() per l'export
+		player.py                   # finestra Tk unificata (vista 3D incorporata + controlli Playback/View/Export) e la logica di riproduzione (MotionData, MotionPlayer)
+		tooltip.py                  # il tooltip (angoli stondati) con nome ed (x, y, z) del componente sotto al mouse
+		export.py                   # salvataggio della vista corrente in PNG o di una motion caricata in MP4
+		win32_embed.py              # interno: incorporamento Win32 della finestra nativa VTK dentro quella Tk (solo Windows)
 	models/
 		user/
-			user.py                    # User(OpenSimModel): scaling antropometrico e setter di postura
+			user.py                    # User(OpenSimModel, _PostureMixin, _JointCenterMixin): scaling antropometrico e posa
+			_posture_table.py          # tabella dichiarativa (coordinata, range, docstring) per ogni setter/getter di postura
+			_posture_generated.py      # GENERATO da scripts/generate_user_code.py -- non modificare a mano
+			_joint_center_table.py     # tabella dichiarativa per ogni property di centro articolare
+			_joint_centers_generated.py  # GENERATO da scripts/generate_user_code.py -- non modificare a mano
 			_data.py                   # interno: caricamento ANSUR e percentili
 			_mapping.py                # interno: mappa ANSUR -> corpi OpenSim
 			assets/
@@ -24,12 +49,17 @@ src/opensim_models/
 		__init__.py                 # wrapper Python-friendly (Body, Marker, Joint, ...) dietro gli accessori di OpenSimModel
 		box.py                      # Box(components.Body): parallelepipedo rigido generico
 		screen.py                   # Screen(components.Body): pannello plexiglass parametrico
-		assets/meshes/               # mesh generata automaticamente per Box/Screen (vedi sotto)
+		assets/meshes/               # mesh generata automaticamente per Box/Screen, di default (vedi mesh_dir sotto)
+scripts/
+	generate_user_code.py          # rigenera _posture_generated.py/_joint_centers_generated.py dalle tabelle; non installato col package, solo per chi sviluppa opensim-models
 tests/
 	test_model.py                  # test esaustivi di OpenSimModel (facade + composizione)
+	test_model_wrapper_signatures.py  # verifica che ogni convenience method di OpenSimModel abbia la stessa firma dell'omonima funzione in operators
 	test_operators.py              # test esaustivi di opensim_models.operators
-	test_player.py                 # test della logica pura di riproduzione (opensim_models._player)
+	test_operators_public_api.py   # verifica che `operators.__all__`/ogni nome pubblico risolvano esattamente come prima dello split in package
+	test_player.py                 # test della logica pura di riproduzione (opensim_models._gui.player)
 	test_user.py                   # test esaustivi di User (dati ANSUR, scaling, postura)
+	test_user_generated_code_is_fresh.py  # verifica che _posture_generated.py/_joint_centers_generated.py siano allineati alle tabelle
 	test_screen.py                 # test esaustivi di Screen (dimensionamento, posa, mesh)
 	test_box.py                    # test esaustivi di Box (dimensioni/massa, posa live, spigoli, mesh)
 	test_cad_import.py             # test di OpenSimModel.from_step (richiede pythonocc-core)
@@ -37,9 +67,11 @@ tests/
 
 Ogni modello specifico (oggi solo `User`) vive nella propria sottocartella sotto `models/`, con il proprio codice e i propri asset; nuovi modelli (es. un attrezzo da palestra completo) si aggiungono allo stesso modo, come ulteriori sottoclassi di `OpenSimModel`. I componenti (`Box`, `Screen`) vivono invece in `components/`, distinti da `models/` proprio perché non sono container: nuovi componenti si aggiungono come ulteriori sottoclassi di `components.Body`, nello stesso file (uno per componente).
 
-**Superficie pubblica.** L'unico simbolo importabile per ciascun modello/componente è la sua classe (`User`, `Screen`, `Box`): `from opensim_models import OpenSimModel, User, Screen, Box` è l'API pubblica principale del package. Tutto il resto -- dataset ANSUR, funzioni di risoluzione dei percentili, mappe di scaling, lettura CAD -- è dettaglio implementativo del modello che lo usa: vive in moduli non riesportati dai vari `__init__.py` (per `User`, i moduli con prefisso `_`, come `_data.py` e `_mapping.py`) e non è pensato per essere importato direttamente. Fa eccezione `opensim_models.operators` (vedi sotto): un modulo di utilità pensato per essere importato direttamente (`from opensim_models import operators`), non riesportato al livello superiore del package per restare distinto dalle classi di modello/componente.
+I setter/getter di postura e le property di centro articolare di `User` (`set_left_hip_flexionextension`, `left_hip`, ...) non sono scritti a mano: `user.py` eredita da due mixin (`_PostureMixin`, `_JointCenterMixin`) generati come codice sorgente letterale -- non con `setattr`/metaclassi -- a partire dalle tabelle dichiarative `_posture_table.py`/`_joint_center_table.py`, proprio per restare completamente visibili all'autocompletamento/IntelliSense come se fossero scritti a mano. Per aggiungere una nuova coordinata di postura o un nuovo centro articolare: aggiungi una riga alla tabella corrispondente, poi esegui `python scripts/generate_user_code.py` per rigenerare i due file `_*_generated.py` (committati nel repository); `tests/test_user_generated_code_is_fresh.py` fallisce se li dimentichi.
 
-Il modello di `User` referenzia 81 mesh VTP, tutte incluse nella cartella `models/user/assets/meshes/`. Sono presenti anche quattro alias aggiuntivi per femori e tibie.
+**Superficie pubblica.** L'unico simbolo importabile per ciascun modello/componente è la sua classe (`User`, `Screen`, `Box`): `from opensim_models import OpenSimModel, User, Screen, Box` è l'API pubblica principale del package. Tutto il resto -- dataset ANSUR, funzioni di risoluzione dei percentili, mappe di scaling, lettura CAD, le tabelle/il codice generato di `User` -- è dettaglio implementativo del modello che lo usa: vive in moduli non riesportati dai vari `__init__.py` (per `User`, i moduli con prefisso `_`, come `_data.py` e `_mapping.py`) e non è pensato per essere importato direttamente. Fa eccezione `opensim_models.operators` (vedi sotto): un modulo di utilità pensato per essere importato direttamente (`from opensim_models import operators`), non riesportato al livello superiore del package per restare distinto dalle classi di modello/componente -- è organizzato internamente come un package (un file per categoria di componente), ma questo è un dettaglio implementativo: `opensim_models.operators.<nome>` risolve esattamente come prima.
+
+Il modello di `User` referenzia 85 mesh VTP, tutte incluse nella cartella `models/user/assets/meshes/`. Sono presenti anche quattro alias aggiuntivi per femori e tibie.
 
 ## Installazione
 
@@ -355,7 +387,7 @@ user.rotate((0.0, 0.0, 0.0), (0.0, 0.0, 1.0), 90.0)
 operators.rotate_object(user, (0.0, 0.0, 0.0), (0.0, 0.0, 1.0), 90.0)
 ```
 
-Su un intero `OpenSimModel` (o `User`/`Screen`), ruota ogni giunto di quel modello collegato direttamente al ground (per `User`, `ground_pelvis`) della stessa quantità: l'intero corpo ruota rigidamente, senza toccare nessun angolo articolare relativo (`hip_flexion_r`, `knee_angle_r`, ...) -- è la generalizzazione di "ruota il bacino per allineare la schiena allo schienale, senza cambiare la postura" di un'analisi ergonomica.
+Su un intero `OpenSimModel` (o `User`/`Screen`), ruota ogni giunto di quel modello collegato direttamente al ground (per `User`, `ground_pelvis`) della stessa quantità: l'intero corpo ruota rigidamente, senza toccare nessun angolo articolare relativo (`hip_flexion_r`, `knee_angle_r`, ...) -- utile per riorientare un intero modello (es. per appoggiarlo contro un piano di riferimento) senza alterarne la postura interna.
 
 Su un singolo componente, invece, cambia in base al tipo:
 
@@ -462,23 +494,59 @@ user = User("M")
 user.show()
 ```
 
-`show()` (ereditato da `OpenSimModel`) apre il visualizzatore nativo Simbody con la postura corrente. Per aggiungere ulteriori cartelle di geometria (ad esempio per un modello composto, vedi sotto) si può passare `geometry_path` esplicitamente, oppure registrarle in anticipo con `add_geometry_directory(...)`.
+`show()` (ereditato da `OpenSimModel`) apre una finestra Tk interattiva con una vista 3D **propria**, basata su VTK -- non il visualizzatore nativo Simbody: quest'ultimo gira come processo separato e non espone a Python alcuna API di posizione del mouse, trasformazione della camera o picking, impedendo di costruire un tooltip con le coordinate reali sotto il cursore. Per aggiungere ulteriori cartelle di geometria (ad esempio per un modello composto, vedi sotto) si può passare `geometry_path` esplicitamente, oppure registrarle in anticipo con `add_geometry_directory(...)`.
+
+La finestra contiene, dall'alto in basso: la vista 3D (su Windows incorporata direttamente nella finestra; su altre piattaforme si apre come finestra separata, perché l'incorporamento usa una chiamata di reparenting specifica di Win32) e tre gruppi di controlli -- Playback, View, Export (vedi sotto). Passando il mouse su un punto del modello compare un tooltip con angoli arrotondati, posizionato accanto al cursore, strutturato come:
+
+```text
+<modello>-<componente>
+X: ...
+Y: ...
+Z: ...
+```
+
+in coordinate reali OpenSim/ground frame, in metri.
+
+**Navigazione della camera** nella vista 3D:
+
+- trascinare col pulsante sinistro del mouse ruota la vista;
+- tenere premuto **Ctrl** mentre si trascina col pulsante sinistro trasla la vista (pan), senza ruotarla;
+- la rotellina del mouse zooma/de-zooma;
+- un semplice click, senza trascinare, non ha alcun effetto.
+
+**Playback** -- riproduzione di una `motion` caricata (vedi sotto):
+
+- `⏪` / `▶`-`⏸` / `⏹` / `⏩` -- indietro veloce, play/pausa, stop, avanti veloce, con velocità crescente ad ogni click su avanti/indietro (`1x -> 2x -> 4x -> 8x`, nei due versi);
+- `Cycle` -- fa ripartire la riproduzione da capo al termine invece di fermarsi;
+- uno slider trascinabile per spostarsi rapidamente in un punto qualunque della simulazione.
+
+**View** -- sempre attivo, indipendentemente da una `motion` caricata:
+
+- `Ground` -- mostra/nasconde il piano di riferimento a terra;
+- `Muscles` -- mostra/nasconde i percorsi muscolari;
+- `Markers` -- mostra/nasconde i marker;
+- `Camera:` -- un menu a tendina con le viste preimpostate (`Front`, `Back`, `Left`, `Right`, `Top`, `Bottom`), che inquadra il modello da quella direzione.
+
+**Export** -- salva su disco, chiedendo sempre posizione e nome file tramite una finestra di selezione file:
+
+- 📷 -- salva la vista 3D corrente come immagine PNG, a 300 dpi;
+- 🎬 -- salva l'intera `motion` caricata come video MP4, campionato a `fps` fotogrammi al secondo (vedi sotto); disabilitato quando non è stata passata alcuna `motion`, come i controlli di Playback.
+
+I controlli di Playback e il pulsante Export di salvataggio animazione sono disabilitati -- non nascosti -- quando non è stata passata alcuna `motion`; View e il pulsante Export di salvataggio immagine restano sempre attivi, perché agiscono sulla vista 3D stessa, non su una riproduzione caricata.
 
 ### Riprodurre una simulazione (`show(motion=...)`)
 
-Passando `motion` a `show()` -- un file `.mot`/`.sto`, o una `opensim.TimeSeriesTable` già in memoria (es. quella scritta da un'analisi, come i file in `simulations/` generati da uno script che usa questo package) -- si apre anche una piccola finestra di controllo della riproduzione, accanto al visualizzatore:
+Passando `motion` a `show()` -- un file `.mot`/`.sto`, o una `opensim.TimeSeriesTable` già in memoria (es. quella scritta da un'analisi precedente) -- i controlli di Playback descritti sopra diventano attivi:
 
 ```python
 user.show(motion="simulazione.mot", loop=True, fps=30)
 ```
 
-La finestra espone play/pause, stop, avanti/indietro veloce (velocità crescente ad ogni click, `1x -> 2x -> 4x -> 8x`, nei due versi), un interruttore "Cycle" per far ripartire la riproduzione da capo al termine invece di fermarsi, e uno slider trascinabile per spostarsi rapidamente in un punto qualunque della simulazione. Le colonne del file/tabella sono interpretate come coordinate OpenSim per nome (es. `"hip_flexion_r"`); quelle angolari vengono convertite automaticamente da gradi a radianti se la tabella dichiara `inDegrees=yes` (come fanno i file `.mot` standard), quelle traslazionali restano sempre in metri. `loop` imposta lo stato iniziale dell'interruttore "Cycle"; `fps` è la frequenza di aggiornamento della riproduzione e del ridisegno del visualizzatore.
+Le colonne del file/tabella sono interpretate come coordinate OpenSim per nome (es. `"hip_flexion_r"`); quelle angolari vengono convertite automaticamente da gradi a radianti se la tabella dichiara `inDegrees=yes` (come fanno i file `.mot` standard), quelle traslazionali restano sempre in metri. `loop` imposta lo stato iniziale dell'interruttore "Cycle"; `fps` è la frequenza di aggiornamento della riproduzione e del ridisegno della vista 3D, ed è anche il frame rate usato per campionare ed esportare l'animazione con il pulsante 🎬.
 
-Questa è una finestra Tk separata, non un pannello dentro il visualizzatore nativo Simbody stesso: i widget interattivi nativi di quest'ultimo (`Visualizer.addSlider`/`addMenu`/`setWindowTitle` -- qualunque cosa accetti una `SimTK::String`) non sono richiamabili da Python in almeno alcune build correnti di OpenSim (passare una `str` qualunque solleva `TypeError: ... argument ... of type 'String const &'`, indipendentemente da cosa/come viene passato -- confermato anche sull'innocuo `setWindowTitle`, quindi è un limite nativo del binding installato, non di questo package). Una finestra Tk separata evita il problema, pur comandando lo stesso visualizzatore tramite `ModelVisualizer.show(state)`, che non richiede alcuna `SimTK::String` ed è lo stesso metodo già usato da `show()`.
+Questo era, in una versione precedente del package, un design a due finestre separate (il visualizzatore nativo Simbody più una finestra Tk agganciata sotto di esso via API Win32): necessario perché i widget interattivi nativi di Simbody (`Visualizer.addSlider`/`addMenu`/`setWindowTitle` -- qualunque cosa accetti una `SimTK::String`) non sono richiamabili da Python in almeno alcune build correnti di OpenSim. Il visualizzatore non è più quello nativo e gira nello stesso processo, quindi la sua finestra viene invece incorporata (solo su Windows) direttamente in un frame di questa stessa finestra Tk: un'unica finestra, nessun aggancio fra finestre separate da mantenere sincronizzato.
 
-**Solo su Windows**, questa finestra resta agganciata sotto quella del visualizzatore: se la finestra del visualizzatore viene spostata o ridimensionata (incluso portarla a schermo intero, nel qual caso la larghezza del player segue quella dello schermo), il player si riposiziona di conseguenza mantenendo sempre la stessa larghezza; se invece si trascina il player, è la finestra del visualizzatore a spostarsi della stessa quantità, mantenendo l'aggancio in entrambe le direzioni. Il player non è ridimensionabile manualmente: le sue dimensioni sono sempre derivate da quelle del visualizzatore. Questo si appoggia all'API nativa Win32 (tramite `ctypes`, nessuna dipendenza aggiuntiva) per individuare la finestra del visualizzatore (una finestra FreeGLUT, riconosciuta dalla classe nativa `"GLUT"` e dal titolo che inizia per `"OpenSim"`) e tenerne traccia; su altre piattaforme l'aggancio è semplicemente assente e il player compare dove lo posiziona Tk di default.
-
-La riproduzione gira su un thread Tk dedicato in background: `show(motion=...)` ritorna subito, e solo quel thread deve toccare lo stato del modello finché la finestra resta aperta (`opensim.State`/`opensim.Model` non sono thread-safe). `user.player` espone la macchina a stati della riproduzione (`opensim_models._player.MotionPlayer`) dopo l'ultima chiamata con `motion`, utile per pilotarla/ispezionarla da codice.
+La riproduzione gira su un thread Tk dedicato in background: `show(motion=...)` ritorna subito, e solo quel thread deve toccare lo stato del modello finché la finestra resta aperta (`opensim.State`/`opensim.Model` non sono thread-safe). `user.player` espone la macchina a stati della riproduzione (`opensim_models._gui.player.MotionPlayer`) dopo l'ultima chiamata con `motion`, utile per pilotarla/ispezionarla da codice. `user.visualizer` espone invece la vista 3D stessa (`opensim_models._gui.visualizer.VTKVisualizer`), utile per pilotare programmaticamente le visibilità/viste sopra (`set_ground_visible`, `set_muscles_visible`, `set_markers_visible`, `set_view`) o per salvare un'immagine (`capture_frame()`, vedi `opensim_models._gui.export`) senza passare dai pulsanti.
 
 Il file esportato con `user.export(...)` contiene il modello scalato con la postura corrente. `export()` copia inoltre automaticamente ogni mesh referenziata dai corpi del modello in una cartella `Geometry/` accanto al file `.osim` esportato (la convenzione di nome che OpenSim/Simbody cercano automaticamente accanto a un modello), così l'esportazione è portabile anche senza le cartelle di geometria originali (`models/user/assets/meshes/` per `User`, la cartella di `from_step` per un modello CAD).
 
@@ -653,12 +721,15 @@ python -m pytest -q
 ```
 
 - `tests/test_model.py` copre `OpenSimModel` in modo esaustivo: caricamento (da file, vuoto, file mancante), sblocco delle coordinate, accessori nominati, gestione di coordinate (posizione, velocità)/marker/muscoli/massa dei corpi, `update_state()` (propagazione a quantità derivate, comportamento "grezzo" dei setter), `reinitialize()` (inclusa la coerenza di coordinate accoppiate da un `CoordinateCouplerConstraint`), `copy()` (indipendenza del modello copiato, preservazione di postura e di attributi delle sottoclassi), scaling, export (inclusa la copia delle mesh in `Geometry/`), cartelle di geometria, `rotate()`/`translate()` (corretta delega a `operators.rotate_object`/`translate_object`, inclusa la copia indipendente restituita con `inplace=False`) e l'intera composizione di modelli (`add_model`, `remove_model`, `__add__`, `__radd__`, rinomina automatica sulle collisioni, preservazione della postura degli operandi, controlli di tipo).
+- `tests/test_model_wrapper_signatures.py` verifica che ognuno dei 26 convenience method di `OpenSimModel` che delegano a `opensim_models.operators` (`add_body`, `add_weld_joint`, `attach_component`, ...) abbia esattamente la stessa firma (nomi, ordine, default) della funzione omonima in `operators` -- una rete di sicurezza contro il disallineamento fra le due, che altrimenti nessun test rileverebbe.
 - `tests/test_user.py` copre `User` in modo esaustivo: caricamento e validazione dei dati ANSUR (eseguibili anche senza OpenSim installato), risoluzione di percentile/altezza (inclusa l'estrapolazione PCHIP fuori range con `UserWarning`), scaling antropometrico, ogni singolo setter di postura e la relativa property di lettura, ogni centro articolare (confrontato con la posizione OpenSim nativa) e il dizionario `joint_centers`, le misure derivate geometricamente (lunghezze di coscia/gamba/braccio/avambraccio, altezza del tronco, larghezza spalle) e quelle lette direttamente da ANSUR (circonferenze, profondità, larghezze, inclusa la stima a sezione circolare di coscia/polpaccio), `com`/`cop`/`set_position`, e l'integrazione con la facade ereditata da `OpenSimModel`.
+- `tests/test_user_generated_code_is_fresh.py` verifica che `_posture_generated.py`/`_joint_centers_generated.py` corrispondano esattamente a quanto produrrebbe `scripts/generate_user_code.py` a partire dalle tabelle correnti, e che i due mixin espongano esattamente i nomi attesi dalle tabelle -- fallisce se una tabella viene modificata senza rigenerare i file.
 - `tests/test_screen.py` copre `Screen` in modo esaustivo: dimensionamento (esplicito, da diagonale, priorità e fallback tra i due), posa (`center_*`/`angle_deg`), struttura del modello (un corpo, un `WeldJoint`), rigenerazione della mesh sui setter e registrazione della cartella di geometria.
 - `tests/test_box.py` copre `Box` in modo esaustivo: massa/inerzia (default, esplicita, analitica per un parallelepipedo pieno) e relativa validazione (dimensioni/massa non positive), `origin`/`angle_deg`/`com` alla costruzione, `set_origin`/`set_angle_deg` (ciascuno preserva l'altra metà della posa), il fatto che `origin`/`angle_deg`/`corners` restino sempre coerenti con la posa corrente (anche dopo `rotate()`/`translate()` ereditati, e attraverso un setter di dimensione, che preserva la posa durante la ricostruzione), gli 8 spigoli (valori attesi e comportamento rigido sotto traslazione), struttura del modello (un corpo, un `WeldJoint`), indipendenza delle istanze, `copy()`, e rigenerazione della mesh sui setter.
 - `tests/test_cad_import.py` copre `OpenSimModel.from_step`: massa/inerzia calcolate correttamente da un solido di riferimento (con conversione di unità), generazione della mesh, giunti verso ground di default, combinazione di più solidi in un unico corpo (`as_one_object`, di default e disattivata) e relativi errori (file mancante, STEP senza solidi).
 - `tests/test_operators.py` copre `opensim_models.operators`: `add_component`/`remove_component` generici e i relativi errori, i wrapper nominati per corpi/giunti/forze-muscoli/marker/vincoli, i costruttori di giunto nominati (gradi di libertà, posizione/orientamento), i corpi a forma primitiva (massa/inerzia analitiche, geometria nativa vs mesh generata, tipo di giunto, batching), il collegamento di mesh esistenti a un corpo, l'uso di `structural_change()` per un batch di modifiche correlate (corpo+giunto), la preservazione della postura delle coordinate non toccate dalla modifica strutturale, e `rotate_object`/`translate_object` (mutazione in place di marker e `PhysicalOffsetFrame`, sola lettura su `Body`/`Joint`, perno/oggetto esterni come componente o coordinata, funzionamento standalone senza modello, rotazione/traslazione rigida dell'intero modello attraverso i suoi giunti agganciati al ground, `inplace=False` -- copia indipendente del modello o dell'oggetto, originale invariato -- ed i relativi errori).
-- `tests/test_player.py` copre la logica pura (senza una finestra/visualizzatore reale) di `opensim_models._player`: `MotionData` (conversione gradi->radianti solo sulle coordinate rotazionali quando `inDegrees=yes`, nessuna conversione su quelle traslazionali, interpolazione lineare e clamp fuori range, colonne che non sono coordinate del modello, errori su tabelle troppo corte) e `MotionPlayer` (play/pause, stop, cycle, avanti/indietro veloce con i relativi limiti e la ripartenza dal verso opposto, wraparound in avanti/indietro con `loop`, seek, e i relativi errori di costruzione). Il collegamento a una finestra Tk reale e l'aggancio nativo Win32 (`show(motion=...)`) non sono automatizzati: richiedono un display e un'interazione reale, verificati manualmente.
+- `tests/test_operators_public_api.py` verifica che lo split di `operators.py` in package (vedi "Contenuto del progetto") non abbia cambiato la superficie pubblica: `operators.__all__` elenca esattamente gli stessi nomi di prima, tutti risolvono a un callable, e `from opensim_models.operators import *` funziona ancora.
+- `tests/test_player.py` copre la logica pura (senza una finestra/visualizzatore reale) di `opensim_models._gui.player`: `MotionData` (conversione gradi->radianti solo sulle coordinate rotazionali quando `inDegrees=yes`, nessuna conversione su quelle traslazionali, interpolazione lineare e clamp fuori range, colonne che non sono coordinate del modello, errori su tabelle troppo corte) e `MotionPlayer` (play/pause, stop, cycle, avanti/indietro veloce con i relativi limiti e la ripartenza dal verso opposto, wraparound in avanti/indietro con `loop`, seek, e i relativi errori di costruzione). Il collegamento a una finestra Tk reale, l'incorporamento nativo Win32 della vista 3D, la navigazione della camera, il tooltip ed il salvataggio di immagine/animazione (`opensim_models._gui.export`) non sono automatizzati: richiedono un display e un contesto OpenGL reali, verificati manualmente.
 
 I test che richiedono i binding OpenSim vengono saltati automaticamente se il modulo `opensim` non è importabile; quelli di `test_cad_import.py` vengono saltati se `pythonocc-core` non è importabile; i test sui soli dati ANSUR restano eseguibili in ogni caso.
 

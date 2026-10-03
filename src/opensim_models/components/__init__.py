@@ -196,7 +196,7 @@ class Body(_ComponentWrapper):
         The 8 corners of the axis-aligned bounding box of every geometry
         item attached to this body (local-frame bounds unioned across all
         of them, via the same ``Mesh``/``Brick``/``Cylinder``/``Sphere``
-        dispatch :class:`~opensim_models._vtk_visualizer.VTKVisualizer`
+        dispatch :class:`~opensim_models._gui.visualizer.VTKVisualizer`
         uses to render them -- see :mod:`opensim_models._geometry`),
         transformed through this body's current ground-frame placement.
         Empty if this body has no attached geometry, or none of it could

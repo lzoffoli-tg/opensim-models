@@ -1,6 +1,6 @@
 """Turning an OpenSim ``DecorativeGeometry`` into a VTK source, shared.
 
-Both :class:`~opensim_models._vtk_visualizer.VTKVisualizer` (building a
+Both :class:`~opensim_models._gui.visualizer.VTKVisualizer` (building a
 renderable actor) and :class:`~opensim_models.components.Body` (computing
 local-frame bounds for :attr:`~opensim_models.components.Body.corners`)
 need the exact same ``Mesh``/``Brick``/``Cylinder``/``Sphere`` dispatch;

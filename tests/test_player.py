@@ -12,7 +12,7 @@ from opensim_models import OpenSimModel
 # fixture with both a rotational (hip_flexion_r) and a translational
 # (pelvis_tx) coordinate, to test MotionData's unit handling.
 from opensim_models.models.user.user import DEFAULT_MODEL_PATH
-from opensim_models._player import MotionData, MotionPlayer
+from opensim_models._gui.player import MotionData, MotionPlayer
 
 opensim = pytest.importorskip("opensim")
 

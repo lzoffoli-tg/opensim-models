@@ -4,37 +4,14 @@ import contextlib
 import os
 import shutil
 import sys
-import weakref
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
+from ._registry import _find_owner, _iter_set, _register_owner
+
 __all__ = ["import_opensim", "OpenSimModel"]
-
-# Bridges a bare opensim.Model (e.g. obtained from a component's own
-# getModel()) back to the OpenSimModel wrapper that owns its `state` --
-# needed because SWIG hands out a fresh Python proxy on every getModel()
-# call, so identity can't be compared directly, only the underlying
-# pointer address (`.this`) can; see _find_owner. Weak-valued so a
-# garbage-collected OpenSimModel's entry disappears on its own.
-_owners: "weakref.WeakValueDictionary[int, OpenSimModel]" = weakref.WeakValueDictionary()
-
-
-def _register_owner(instance: "OpenSimModel") -> None:
-    _owners[int(instance.model.this)] = instance
-
-
-def _find_owner(raw_model: Any) -> "OpenSimModel | None":
-    """Return the live :class:`OpenSimModel` wrapping ``raw_model``, if any.
-
-    ``raw_model`` is a bare ``opensim.Model``, typically obtained from a
-    component via its own ``getModel()``. Returns ``None`` if ``raw_model``
-    is ``None`` or was never wrapped by a (still-alive) :class:`OpenSimModel`.
-    """
-    if raw_model is None:
-        return None
-    return _owners.get(int(raw_model.this))
 
 
 def _ensure_visualizer_dll_path() -> None:
@@ -74,11 +51,6 @@ def _register_geometry_search_path(opensim: Any, directory: str | Path) -> None:
     case where an instance already exists.
     """
     opensim.ModelVisualizer.addDirToGeometrySearchPaths(str(Path(directory).resolve()))
-
-
-def _iter_set(component_set: Any) -> Any:
-    for index in range(component_set.getSize()):
-        yield component_set.get(index)
 
 
 def _unique_component_name(prefix: str, name: str, existing: set[str]) -> str:
@@ -1228,7 +1200,7 @@ class OpenSimModel:
     def visualizer(self) -> Any | None:
         """Return this instance's own VTK-based 3D visualizer, once :meth:`show` has started it.
 
-        This is this package's own :class:`~opensim_models._vtk_visualizer.VTKVisualizer`
+        This is this package's own :class:`~opensim_models._gui.visualizer.VTKVisualizer`
         (not OpenSim's native Simbody visualizer -- see :meth:`show` for why
         this package renders its own 3D view instead). It is constructed on
         a background thread shortly after :meth:`show` starts, so it may
@@ -1240,7 +1212,7 @@ class OpenSimModel:
         Returns
         -------
         Any or None
-            The live :class:`~opensim_models._vtk_visualizer.VTKVisualizer`
+            The live :class:`~opensim_models._gui.visualizer.VTKVisualizer`
             instance, or ``None`` if :meth:`show` has never been called (or
             was just called and the background thread hasn't constructed it
             yet).
@@ -1266,12 +1238,12 @@ class OpenSimModel:
         Opens a single window: the 3D view in its upper area (on Windows,
         embedded directly into it; on other platforms the 3D view opens as
         its own separate window instead, since embedding relies on a
-        Win32-specific reparenting call) with playback controls and a
-        status bar below -- see :func:`~opensim_models._player.start_player`
-        for exactly what it shows and its threading caveats. The status
-        bar live-updates with ``"<model>-<component> (x, y, z)"`` for
-        whatever the mouse is currently over in the 3D view, real
-        OpenSim/ground-frame coordinates -- not available from a window
+        Win32-specific reparenting call) with Playback/View/Export controls
+        below it -- see :func:`~opensim_models._gui.player.start_player`
+        for exactly what it shows and its threading caveats. A floating
+        tooltip next to the cursor shows ``"<model>-<component>"`` and its
+        ``X``/``Y``/``Z`` ground-frame position for whatever the mouse is
+        currently over in the 3D view -- not available from a window
         showing only static geometry, which is the reason this package
         renders its own 3D view with VTK instead of delegating to
         OpenSim's native (Simbody) visualizer: that one runs as a separate
@@ -1292,18 +1264,20 @@ class OpenSimModel:
         motion : str, pathlib.Path, opensim.TimeSeriesTable, or None, optional
             A motion to animate: a motion file path (``.mot``/``.sto``), or
             an already-loaded/built ``opensim.TimeSeriesTable`` (e.g. one
-            written by a prior analysis). The playback window (see above)
-            always opens either way; without a motion its playback controls
-            (play/pause, stop, fast-forward/backward, cycle, the progress
-            slider) are simply shown disabled, since there is nothing to
-            play -- only the status bar is live. Defaults to ``None``.
+            written by a prior analysis). The window always opens either
+            way; without a motion, its Playback controls (play/pause,
+            stop, fast-forward/backward, cycle, the progress slider) and
+            its Export animation button are simply shown disabled, since
+            there is nothing to play/animate -- the hover tooltip and the
+            Export image button stay live regardless. Defaults to ``None``.
         loop : bool, optional
             Initial state of the playback window's cycle/loop toggle.
             Ignored if ``motion`` is ``None``. Defaults to ``False``.
         fps : float, optional
             Target refresh rate for advancing playback, refreshing the
-            status bar, and redrawing the visualizer, in frames per
-            second. Defaults to ``30.0``.
+            tooltip, and redrawing the visualizer, in frames per second;
+            also the frame rate of an exported animation. Defaults to
+            ``30.0``.
 
         Raises
         ------
@@ -1327,13 +1301,13 @@ class OpenSimModel:
             # self._visualizer.close() directly here instead, from this
             # (the caller's) thread, was tried and rejected, confirmed
             # directly to hang forever inside vtkRenderWindow.Finalize()
-            # (see _player.py's tick() for the full explanation).
+            # (see _gui/player.py's tick() for the full explanation).
             self._player_window.close()
             self._player_window = None
             self._player = None
         self._visualizer = None
 
-        from ._player import start_player
+        from ._gui.player import start_player
 
         # start_player itself constructs the VTKVisualizer, on the same
         # background thread that then owns/pumps its native window for
