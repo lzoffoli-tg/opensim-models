@@ -432,6 +432,162 @@ def test_joint_position_local_matches_child_offset_frame_translation():
     assert joint.position_local == pytest.approx(expected)
 
 
+def test_joint_child_frame_is_an_offset_frame_matching_position_local():
+    from opensim_models import components
+
+    model = make_model()
+    joint = model.joint("hip_r")
+
+    child_frame = joint.child_frame
+
+    assert isinstance(child_frame, components.OffsetFrame)
+    assert child_frame.translation == pytest.approx(joint.position_local)
+    assert child_frame.position_local == pytest.approx(joint.position_local)
+    assert child_frame.position_global == pytest.approx(joint.position_global)
+
+
+def test_joint_parent_frame_is_an_offset_frame():
+    from opensim_models import components
+
+    model = make_model()
+    joint = model.joint("hip_r")
+
+    parent_frame = joint.parent_frame
+
+    assert isinstance(parent_frame, components.OffsetFrame)
+    # hip_r's parent frame is on the pelvis, not at the ground origin.
+    assert parent_frame.position_global != pytest.approx((0.0, 0.0, 0.0))
+
+
+def test_offset_frame_translation_can_be_read_and_updated():
+    from opensim_models import components
+
+    model = make_model()
+    offset_frame = model.joint("hip_r").child_frame
+
+    offset_frame.set_translation((0.01, 0.02, 0.03))
+
+    assert offset_frame.translation == pytest.approx((0.01, 0.02, 0.03))
+    assert offset_frame.position_local == pytest.approx((0.01, 0.02, 0.03))
+
+
+def test_offset_frame_set_translation_rejects_non_finite_values():
+    model = make_model()
+    offset_frame = model.joint("hip_r").child_frame
+
+    with pytest.raises(ValueError, match="finite"):
+        offset_frame.set_translation((float("inf"), 0.0, 0.0))
+
+
+def test_offset_frame_orientation_deg_can_be_read_and_updated():
+    model = make_model()
+    offset_frame = model.joint("hip_r").child_frame
+
+    offset_frame.set_orientation_deg((10.0, 20.0, 30.0))
+
+    assert offset_frame.orientation_deg == pytest.approx((10.0, 20.0, 30.0))
+
+
+def test_offset_frame_set_orientation_deg_rejects_non_finite_values():
+    model = make_model()
+    offset_frame = model.joint("hip_r").child_frame
+
+    with pytest.raises(ValueError, match="finite"):
+        offset_frame.set_orientation_deg((float("nan"), 0.0, 0.0))
+
+
+def test_offset_frame_parents_resolves_to_the_base_body():
+    from opensim_models import components
+
+    model = make_model()
+    offset_frame = model.joint("hip_r").child_frame  # on the femur
+
+    parents = offset_frame.parents
+
+    assert len(parents) == 1
+    assert isinstance(parents[0], components.Body)
+    assert parents[0].name == "femur_r"
+
+
+# ---------------------------------------------------------------------------
+# parents: forward relations (Marker, Joint) and the backward one (Body)
+# ---------------------------------------------------------------------------
+
+
+def test_marker_parents_is_the_body_it_is_attached_to():
+    from opensim_models import components
+
+    model = make_model()
+    marker = model.marker("RASI")  # a pelvis landmark
+
+    parents = marker.parents
+
+    assert len(parents) == 1
+    assert isinstance(parents[0], components.Body)
+    assert parents[0].name == "pelvis"
+
+
+def test_joint_parents_is_the_parent_and_child_body():
+    from opensim_models import components
+
+    model = make_model()
+    joint = model.joint("hip_r")
+
+    parents = joint.parents
+
+    assert len(parents) == 2
+    assert all(isinstance(p, components.Body) for p in parents)
+    assert [p.name for p in parents] == ["pelvis", "femur_r"]
+
+
+def test_body_parents_finds_every_referencing_joint_muscle_and_marker():
+    from opensim_models import components
+
+    model = make_model()
+    femur = model.body("femur_r")
+
+    parents = femur.parents
+
+    names_by_type = {}
+    for parent in parents:
+        names_by_type.setdefault(type(parent), set()).add(parent.name)
+
+    # femur_r is the child body of these three joints in the bundled model.
+    assert {"hip_r", "walker_knee_r", "patellofemoral_r"} <= names_by_type[components.Joint]
+    # A handful of muscles known to cross the femur.
+    assert {"glmax1_r", "iliacus_r", "psoas_r", "vasint_r"} <= names_by_type[components.Muscle]
+    # A handful of femur-attached markers.
+    assert "RHJC" in names_by_type[components.Marker]
+    # No non-muscle Force or coordinate-only Constraint in the bundled
+    # model references any body directly -- confirms nothing beyond the
+    # three scanned categories leaked in.
+    assert components.Constraint not in names_by_type
+
+
+def test_body_parents_is_empty_for_a_body_with_no_joint_muscle_or_marker():
+    # add_body alone (no add_joint call) still gets an automatic FreeJoint
+    # from OpenSim itself at initSystem() -- so this exercises "truly
+    # unreferenced" by adding a second, deliberately disconnected body
+    # alongside one connected normally, and checking only the first.
+    from opensim_models import components, operators
+
+    model = OpenSimModel(model_path=None)
+    with model.structural_change():
+        operators.add_body(model, "connected", mass=1.0)
+        operators.add_body(model, "disconnected", mass=1.0)
+        operators.add_joint(
+            model, opensim.FreeJoint("connected_to_ground", model.model.getGround(), model.body("connected").raw)
+        )
+
+    # Both bodies get OpenSim's own automatic FreeJoint fallback at
+    # initSystem() when they have none explicitly -- so "disconnected"
+    # still ends up with one joint (its own auto-added FreeJoint), but
+    # zero muscles/markers/constraints reference it.
+    parents = model.body("disconnected").parents
+    assert all(not isinstance(p, components.Muscle) for p in parents)
+    assert all(not isinstance(p, components.Marker) for p in parents)
+
+
 # ---------------------------------------------------------------------------
 # Muscles
 # ---------------------------------------------------------------------------

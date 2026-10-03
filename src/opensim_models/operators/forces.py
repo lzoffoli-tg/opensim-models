@@ -36,17 +36,21 @@ def add_force(model: "OpenSimModel", force: Any, *, reinitialize: bool = False) 
     Returns
     -------
     components.Force
-        ``force``, wrapped in the thin, generic
-        :class:`~opensim_models.components.Force` (``.name``/``.raw``/
-        ``.set_name()`` only). This is true even if ``force`` is actually
-        a muscle: use :func:`add_muscle` instead of this function to get
-        back a :class:`~opensim_models.components.Muscle`, with its extra
+        ``force``, wrapped in the more specific
+        :class:`~opensim_models.components.ExponentialContactForce` when
+        applicable (see
+        :func:`~opensim_models.components._wrap_force`), otherwise the
+        thin, generic :class:`~opensim_models.components.Force` (``.name``/
+        ``.raw``/``.set_name()`` only). This is the generic ``Force`` even
+        if ``force`` is actually a muscle: use :func:`add_muscle` instead
+        of this function to get back a
+        :class:`~opensim_models.components.Muscle`, with its extra
         ``max_isometric_force``/``optimal_fiber_length``/
         ``tendon_slack_length``/``pennation_angle`` properties.
     """
     force = _unwrap(force)
     add_component(model, "force", force, reinitialize=reinitialize)
-    return components.Force(model, force)
+    return components._wrap_force(model, force)
 
 
 def remove_force(

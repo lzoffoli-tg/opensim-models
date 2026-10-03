@@ -105,10 +105,10 @@ def test_default_angle_stands_the_panel_upright():
 
 
 def test_position_global_matches_center_coordinates():
-    # Screen has no Box-style `origin` property of its own; the inherited
-    # Body.position_global (ground-frame body origin) is, for a screen (a
-    # single uniform body with mass_center=(0, 0, 0)), the same point as
-    # (center_x, center_y, center_z).
+    # The inherited Body.position_global (ground-frame body origin) is,
+    # for a screen (a single uniform body with mass_center=(0, 0, 0)), the
+    # same point as (center_x, center_y, center_z) -- and as origin, see
+    # test_origin_matches_center_coordinates_and_position_global below.
     screen = Screen(center_x=1.0, center_y=2.0, center_z=3.0, angle_deg=45.0)
 
     assert screen.position_global == pytest.approx((1.0, 2.0, 3.0))
@@ -118,6 +118,25 @@ def test_position_local_is_always_the_origin():
     screen = Screen(center_x=1.0, center_y=2.0, center_z=3.0)
 
     assert screen.position_local == (0.0, 0.0, 0.0)
+
+
+def test_origin_matches_center_coordinates_and_position_global():
+    screen = Screen(center_x=1.0, center_y=2.0, center_z=3.0, angle_deg=45.0)
+
+    assert screen.origin == pytest.approx((1.0, 2.0, 3.0))
+    assert screen.origin == pytest.approx(screen.position_global)
+
+
+def test_set_origin_moves_the_panel_and_keeps_its_angle():
+    screen = Screen(center_x=1.0, center_y=1.0, center_z=1.0, angle_deg=30.0)
+
+    screen.set_origin((5.0, 0.0, 0.0))
+
+    assert screen.origin == pytest.approx((5.0, 0.0, 0.0))
+    assert screen.center_x == pytest.approx(5.0)
+    assert screen.center_y == pytest.approx(0.0)
+    assert screen.center_z == pytest.approx(0.0)
+    assert screen.angle_deg == pytest.approx(30.0)
 
 
 # ---------------------------------------------------------------------------

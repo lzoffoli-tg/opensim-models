@@ -380,6 +380,47 @@ class Screen(Body):
         self._rebuild()
 
     @property
+    def origin(self) -> tuple[float, float, float]:
+        """Current panel centre in the ground frame, in metres.
+
+        Same value as ``(center_x, center_y, center_z)`` combined into one
+        tuple -- and, since a screen panel has ``mass_center=(0, 0, 0)`` in
+        its own frame (see :meth:`_rebuild`), also the same value as the
+        inherited :attr:`~opensim_models.components.Body.position_global`.
+        Kept as its own, longer-standing name here, mirroring
+        :attr:`~opensim_models.components.Box.origin`, since "origin"
+        reads more naturally for a panel's centre than the generic
+        ``position_global``. Read directly off the body's placement, so it
+        reflects the constructor's ``center_x``/``center_y``/``center_z``,
+        :meth:`set_origin`, :meth:`set_center_x`/:meth:`set_center_y`/
+        :meth:`set_center_z`, or any :meth:`rotate`/:meth:`translate`
+        applied since -- never a stale cached value.
+        """
+        return self.position_global
+
+    def set_origin(self, origin: tuple[float, float, float]) -> None:
+        """Set the panel's centre in the ground frame, keeping its current orientation.
+
+        Rebuilds the body/mesh/joint, same as a size/pose setter (see
+        :meth:`set_width_mm`); unlike :class:`~opensim_models.components.Box`'s
+        ``set_origin`` (which must explicitly re-pass ``angle_deg`` into its
+        rebuild, since both are arguments to the same call), :attr:`angle_deg`
+        here is simply untouched -- it is already its own separate stored
+        field (see :meth:`_rebuild`), not derived from ``origin``. Prefer
+        :meth:`translate` for a relative shift instead of an absolute
+        position. Unlike the size setters, this does not validate ``origin``
+        (no finiteness check) before passing it through to the new
+        ``WeldJoint``.
+
+        Parameters
+        ----------
+        origin : tuple[float, float, float]
+            New panel centre ``(x, y, z)`` in the ground frame, in metres.
+        """
+        self._center_x, self._center_y, self._center_z = origin
+        self._rebuild()
+
+    @property
     def angle_deg(self) -> float:
         """Panel inclination relative to the ground, in degrees (0 = flat, 90 = upright)."""
         return self._angle_deg

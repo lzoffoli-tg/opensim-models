@@ -580,19 +580,28 @@ class OpenSimModel:
 
         A muscle is itself a ``Force`` subtype in OpenSim (there is no
         separate muscle set at the native level) -- see :attr:`muscles` to
-        get only the muscles.
+        get only the muscles (as :class:`~opensim_models.components.Muscle`,
+        never returned here even though every muscle is also iterated by
+        this property).
 
         Returns
         -------
         dict[str, components.Force]
             Maps each force's OpenSim name to a
-            :class:`~opensim_models.components.Force` wrapping it. Rebuilt
-            fresh on every access; empty if the model has no forces.
+            :class:`~opensim_models.components.Force` wrapping it, or to
+            the more specific
+            :class:`~opensim_models.components.ExponentialContactForce`
+            when applicable (see
+            :func:`~opensim_models.components._wrap_force`) -- a muscle
+            still comes back as the plain, generic ``Force`` here (not
+            ``Muscle``), by design; use :attr:`muscles`/:meth:`muscle` for
+            that. Rebuilt fresh on every access; empty if the model has no
+            forces.
         """
         from . import components
 
         return {
-            item.getName(): components.Force(self, item)
+            item.getName(): components._wrap_force(self, item)
             for item in _iter_set(self.model.getForceSet())
         }
 
@@ -603,16 +612,21 @@ class OpenSimModel:
         Returns
         -------
         dict[str, components.Constraint]
-            Maps each constraint's OpenSim name to a
-            :class:`~opensim_models.components.Constraint` wrapping it (of
-            any constraint type -- ``WeldConstraint``, ``PointConstraint``,
-            ``CoordinateCouplerConstraint``, ...). Rebuilt fresh on every
-            access; empty if the model has no constraints.
+            Maps each constraint's OpenSim name to the most specific
+            wrapper available for its concrete type --
+            :class:`~opensim_models.components.WeldConstraint`,
+            :class:`~opensim_models.components.PointConstraint`,
+            :class:`~opensim_models.components.ConstantDistanceConstraint`,
+            or the thin, generic
+            :class:`~opensim_models.components.Constraint` for anything
+            else (e.g. a ``CoordinateCouplerConstraint``) -- see
+            :func:`~opensim_models.components._wrap_constraint`. Rebuilt
+            fresh on every access; empty if the model has no constraints.
         """
         from . import components
 
         return {
-            item.getName(): components.Constraint(self, item)
+            item.getName(): components._wrap_constraint(self, item)
             for item in _iter_set(self.model.getConstraintSet())
         }
 

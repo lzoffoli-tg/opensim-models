@@ -43,13 +43,17 @@ def add_constraint(
     Returns
     -------
     components.Constraint
-        ``constraint``, wrapped in the thin, generic
-        :class:`~opensim_models.components.Constraint` (``.name``/
-        ``.raw``/``.set_name()`` only).
+        ``constraint``, wrapped in the most specific wrapper available for
+        its concrete type (:class:`~opensim_models.components.WeldConstraint`,
+        :class:`~opensim_models.components.PointConstraint`,
+        :class:`~opensim_models.components.ConstantDistanceConstraint`), or
+        the thin, generic :class:`~opensim_models.components.Constraint`
+        (``.name``/``.raw``/``.set_name()`` only) for anything else -- see
+        :func:`~opensim_models.components._wrap_constraint`.
     """
     constraint = _unwrap(constraint)
     add_component(model, "constraint", constraint, reinitialize=reinitialize)
-    return components.Constraint(model, constraint)
+    return components._wrap_constraint(model, constraint)
 
 
 def remove_constraint(
@@ -112,8 +116,12 @@ def add_weld_constraint(
 
     Returns
     -------
-    components.Constraint
-        The newly created constraint, wrapped.
+    components.WeldConstraint
+        The newly created constraint, wrapped in
+        :class:`~opensim_models.components.WeldConstraint`, which exposes
+        each side's attachment frame (``frame1``/``frame2``, each an
+        :class:`~opensim_models.components.OffsetFrame`) and the matching
+        ``point1_global``/``point1_local``/``point2_global``/``point2_local``.
     """
     body1 = _unwrap(body1)
     body2 = _unwrap(body2)
@@ -127,7 +135,7 @@ def add_weld_constraint(
         model.opensim.Vec3(*np.deg2rad(orientation2_deg)),
     )
     add_component(model, "constraint", constraint, reinitialize=reinitialize)
-    return components.Constraint(model, constraint)
+    return components._wrap_constraint(model, constraint)
 
 
 def add_point_constraint(
@@ -174,8 +182,10 @@ def add_point_constraint(
 
     Returns
     -------
-    components.Constraint
-        The newly created constraint, wrapped.
+    components.PointConstraint
+        The newly created constraint, wrapped in
+        :class:`~opensim_models.components.PointConstraint`, which exposes
+        ``point1_global``/``point1_local``/``point2_global``/``point2_local``.
     """
     body1 = _unwrap(body1)
     body2 = _unwrap(body2)
@@ -184,7 +194,7 @@ def add_point_constraint(
     )
     constraint.setName(name)
     add_component(model, "constraint", constraint, reinitialize=reinitialize)
-    return components.Constraint(model, constraint)
+    return components._wrap_constraint(model, constraint)
 
 
 def add_coordinate_coupler_constraint(
@@ -248,7 +258,7 @@ def add_coordinate_coupler_constraint(
     constraint.setDependentCoordinateName(dependent_name)
     constraint.setFunction(function)
     add_component(model, "constraint", constraint, reinitialize=reinitialize)
-    return components.Constraint(model, constraint)
+    return components._wrap_constraint(model, constraint)
 
 
 def _local_to_ground(frame: Any, state: Any, local_point: Any) -> Any:
@@ -380,8 +390,13 @@ def add_point_on_plane_constraint(
 
     Returns
     -------
-    components.Constraint
-        The newly created ``ConstantDistanceConstraint``, wrapped.
+    components.ConstantDistanceConstraint
+        The newly created ``ConstantDistanceConstraint``, wrapped in
+        :class:`~opensim_models.components.ConstantDistanceConstraint`,
+        which exposes ``point1_global``/``point1_local`` (``body``/
+        ``point``) and ``point2_global``/``point2_local`` (``plane_body``/
+        the computed ``anchor_point`` -- *not* ``plane_point`` itself, see
+        that class's own docstring) plus ``distance``.
 
     Raises
     ------
@@ -459,6 +474,6 @@ def add_point_on_plane_constraint(
     )
     constraint.setName(name)
     add_component(model, "constraint", constraint, reinitialize=reinitialize)
-    return components.Constraint(model, constraint)
+    return components._wrap_constraint(model, constraint)
 
 

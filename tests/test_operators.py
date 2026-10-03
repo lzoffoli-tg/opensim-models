@@ -8,7 +8,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from opensim_models import Box, OpenSimModel, operators
+from opensim_models import Box, OpenSimModel, components, operators
 
 opensim = pytest.importorskip("opensim")
 
@@ -298,8 +298,198 @@ def test_add_point_constraint_connects_a_body_to_ground():
 
 
 # ---------------------------------------------------------------------------
+# Constraint/force subtype dispatch: WeldConstraint, PointConstraint,
+# ConstantDistanceConstraint, ExponentialContactForce
+# ---------------------------------------------------------------------------
+
+
+def add_welded_body(model, name, position):
+    """Add a body rigidly welded to ground at ``position`` (no dof)."""
+    body = opensim.Body(name, 1.0, opensim.Vec3(0, 0, 0), opensim.Inertia(1, 1, 1, 0, 0, 0))
+    model.model.addBody(body)
+    joint = opensim.WeldJoint(
+        f"{name}_to_ground",
+        model.model.getGround(),
+        opensim.Vec3(*position),
+        opensim.Vec3(0, 0, 0),
+        body,
+        opensim.Vec3(0, 0, 0),
+        opensim.Vec3(0, 0, 0),
+    )
+    model.model.addJoint(joint)
+    model.model.finalizeConnections()
+    model.state = model.model.initSystem()
+    return body
+
+
+def test_add_weld_constraint_returns_a_weld_constraint_with_both_points():
+    model = make_model()
+    body1 = add_welded_body(model, "b1", (0, 0, 0))
+    body2 = add_welded_body(model, "b2", (0, 0, 0))
+
+    constraint = operators.add_weld_constraint(
+        model, "weld1", body1, body2,
+        position1=(0.1, 0.2, 0.3), position2=(0.1, 0.2, 0.3),
+        reinitialize=True,
+    )
+
+    assert isinstance(constraint, components.WeldConstraint)
+    assert isinstance(constraint.frame1, components.OffsetFrame)
+    assert isinstance(constraint.frame2, components.OffsetFrame)
+    assert constraint.point1_local == pytest.approx((0.1, 0.2, 0.3))
+    assert constraint.point1_global == pytest.approx((0.1, 0.2, 0.3))
+    assert constraint.point2_local == pytest.approx((0.1, 0.2, 0.3))
+    assert constraint.point2_global == pytest.approx((0.1, 0.2, 0.3))
+    # model.constraints must dispatch to the same specific wrapper type.
+    assert type(model.constraints["weld1"]) is components.WeldConstraint
+
+    parents = constraint.parents
+    assert [p.name for p in parents] == ["b1", "b2"]
+    assert all(isinstance(p, components.Body) for p in parents)
+    # The backward relation must find this constraint from either body.
+    assert constraint in model.body("b1").parents
+    assert constraint in model.body("b2").parents
+
+
+def test_add_point_constraint_returns_a_point_constraint_with_both_points():
+    model = make_model()
+    body = add_welded_body(model, "b1", (2.0, 3.0, 4.0))
+
+    constraint = operators.add_point_constraint(
+        model, "point1", model.model.getGround(), (2.1, 3.2, 4.3), body, (0.1, 0.2, 0.3),
+        reinitialize=True,
+    )
+
+    assert isinstance(constraint, components.PointConstraint)
+    assert constraint.point1_local == pytest.approx((2.1, 3.2, 4.3))
+    assert constraint.point1_global == pytest.approx((2.1, 3.2, 4.3))  # ground: local == global
+    assert constraint.point2_local == pytest.approx((0.1, 0.2, 0.3))
+    assert constraint.point2_global == pytest.approx((2.1, 3.2, 4.3))  # constraint satisfied
+    assert type(model.constraints["point1"]) is components.PointConstraint
+
+    parents = constraint.parents
+    assert opensim.Ground.safeDownCast(parents[0]) is not None
+    assert isinstance(parents[1], components.Body) and parents[1].name == "b1"
+    assert constraint in model.body("b1").parents
+
+
+def test_add_coordinate_coupler_constraint_still_returns_the_generic_wrapper():
+    # CoordinateCouplerConstraint has no single spatial point -- no
+    # dedicated subtype exists, so dispatch must fall through to the plain
+    # Constraint wrapper (not raise, not silently return something wrong).
+    model = make_model()
+    add_free_body(model, "b1")
+    add_free_body(model, "b2")
+    independent = next(
+        name for name in model.coordinates if name.startswith("b1_to_ground")
+    )
+    dependent = next(
+        name for name in model.coordinates if name.startswith("b2_to_ground")
+    )
+
+    constraint = operators.add_coordinate_coupler_constraint(
+        model, "coupler1", independent, dependent, opensim.LinearFunction(1.0, 0.0),
+        reinitialize=True,
+    )
+
+    assert type(constraint) is components.Constraint
+    assert type(model.constraints["coupler1"]) is components.Constraint
+
+
+def test_add_point_on_plane_constraint_returns_a_constant_distance_constraint():
+    model = make_model()
+    body = add_welded_body(model, "b1", (0, 0, 0))
+    plane_body = add_welded_body(model, "pb", (0, 0, 0))
+
+    constraint = operators.add_point_on_plane_constraint(
+        model, "cdc1", body, (0, 0, 0), plane_body, (0, 0, 0), (0, 1, 0),
+        reinitialize=True,
+    )
+
+    assert isinstance(constraint, components.ConstantDistanceConstraint)
+    assert constraint.point1_global == pytest.approx((0.0, 0.0, 0.0))
+    assert constraint.point2_global == pytest.approx((0.0, -50.0, 0.0))  # default anchor_distance
+    assert constraint.distance == pytest.approx(50.0)
+    assert type(model.constraints["cdc1"]) is components.ConstantDistanceConstraint
+
+    parents = constraint.parents
+    assert [p.name for p in parents] == ["b1", "pb"]
+    assert constraint in model.body("b1").parents
+    assert constraint in model.body("pb").parents
+
+
+def test_add_sliding_point_contact_returns_an_exponential_contact_force():
+    model = make_model()
+    body = add_welded_body(model, "b1", (0, 1, 0))
+    plane_body = add_welded_body(model, "pb", (0, 0, 0))
+
+    force = operators.add_sliding_point_contact(
+        model, "contact1", body, (0.1, 0.2, 0.3), plane_body, (1, 2, 3), (0, 1, 0),
+        reinitialize=True,
+    )
+
+    assert isinstance(force, components.ExponentialContactForce)
+    assert force.point_global == pytest.approx((0.1, 1.2, 0.3))
+    assert force.plane_point_global == pytest.approx((1.0, 2.0, 3.0))
+    assert type(model.forces["contact1"]) is components.ExponentialContactForce
+
+
+def test_add_muscle_still_returns_a_muscle_not_the_generic_force_or_wrapper():
+    # components.Muscle stays reachable only via add_muscle/.muscles/.muscle()
+    # -- _wrap_force deliberately does not special-case it (see its
+    # docstring); this guards that .forces still returns the generic Force
+    # for a muscle, not Muscle, even after the dispatch helper was added.
+    model = make_model()
+    body = add_free_body(model, "b1")
+    muscle = operators.add_muscle(
+        model, "m1", model.model.getGround(), (0, 0, 0), body.raw, (0, 0, 0),
+        reinitialize=True,
+    )
+
+    assert isinstance(muscle, components.Muscle)
+    assert type(model.forces["m1"]) is components.Force
+
+
+# ---------------------------------------------------------------------------
 # Contact geometry: position_global / position_local
 # ---------------------------------------------------------------------------
+
+
+def test_contact_geometry_parents_is_the_body_it_is_attached_to():
+    model = make_model()
+    body = add_free_body(model, "b1")
+
+    sphere = opensim.ContactSphere()
+    sphere.setName("cs1")
+    sphere.setRadius(0.05)
+    sphere.connectSocket_frame(body.raw)
+    operators.add_contact_geometry(model, sphere, reinitialize=True)
+
+    parents = model.contact_geometries["cs1"].parents
+
+    assert len(parents) == 1
+    assert isinstance(parents[0], components.Body)
+    assert parents[0].name == "b1"
+
+
+def test_muscle_parents_lists_distinct_bodies_crossed_by_the_path():
+    model = make_model()
+    body = add_free_body(model, "b1")
+
+    muscle = operators.add_muscle(
+        model, "mus1", model.model.getGround(), (0, 0, 0), body.raw, (0, 0, 0),
+        via_points=[(model.model.getGround(), (0.05, 0, 0))],
+        reinitialize=True,
+    )
+
+    parents = muscle.parents
+
+    # 3 path points (origin on ground, via point on ground, insertion on
+    # body), but ground's duplicate is dropped -- 2 distinct bodies.
+    assert len(parents) == 2
+    assert opensim.Ground.safeDownCast(parents[0]) is not None
+    assert isinstance(parents[1], components.Body) and parents[1].name == "b1"
+    assert muscle in model.body("b1").parents
 
 
 def test_contact_geometry_position_local_matches_its_own_location():

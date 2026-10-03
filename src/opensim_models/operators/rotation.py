@@ -6,6 +6,7 @@ from typing import Any
 
 import numpy as np
 
+from .. import components
 from ..model import OpenSimModel
 from ._shared import _unwrap
 from ._spatial import (
@@ -80,12 +81,22 @@ def _rotate_offset_frame(
 ) -> tuple[float, float, float]:
     """Rotate a ``PhysicalOffsetFrame``'s translation and orientation in place.
 
+    Reads/writes ``obj``'s own translation/orientation through
+    :class:`~opensim_models.components.OffsetFrame` (its
+    ``position_global``/``set_translation``/``set_orientation_deg``) rather
+    than raw SWIG calls -- the parent side still goes through the generic,
+    type-agnostic :func:`_resolve_ground_position`/
+    :func:`_rotation_matrix_in_ground` helpers below, since ``parent`` can
+    be any kind of frame (``Ground``, a plain ``Body``, or another offset
+    frame), not necessarily a ``PhysicalOffsetFrame`` itself.
+
     Does not call :meth:`~opensim_models.model.OpenSimModel.reinitialize`:
     callers rotating several frames together (see :func:`_rotate_whole_model`)
     do that once, after the whole batch.
     """
     opensim = model.opensim
-    current_position = np.array(_resolve_ground_position(obj, model), dtype=float)
+    offset_frame = components.OffsetFrame(model, obj)
+    current_position = np.array(offset_frame.position_global, dtype=float)
     current_rotation = _rotation_matrix_in_ground(model, obj)
     new_position = pivot + rotation_matrix @ (current_position - pivot)
     new_rotation = rotation_matrix @ current_rotation
@@ -97,8 +108,10 @@ def _rotate_offset_frame(
     local_position = parent_rotation.T @ (new_position - parent_position)
     local_rotation = parent_rotation.T @ new_rotation
 
-    obj.set_translation(opensim.Vec3(*local_position))
-    obj.set_orientation(opensim.Vec3(*_matrix_to_body_fixed_xyz(model, local_rotation)))
+    offset_frame.set_translation(tuple(local_position))
+    offset_frame.set_orientation_deg(
+        tuple(np.degrees(_matrix_to_body_fixed_xyz(model, local_rotation)))
+    )
     return tuple(float(value) for value in new_position)
 
 

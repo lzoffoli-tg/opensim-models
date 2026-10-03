@@ -18,9 +18,11 @@ src/opensim_models/
 		primitives.py               # add_box_body/add_cylinder_body/add_sphere_body
 		forces.py                   # add_force/remove_force, add_muscle/remove_muscle
 		markers.py                  # add_marker/remove_marker
-		constraints.py              # add_constraint e i costruttori nominati (add_weld_constraint, ...)
+		constraints.py              # add_constraint e i costruttori nominati (add_weld_constraint, add_point_constraint, add_coordinate_coupler_constraint, add_point_on_plane_constraint)
 		auxiliary.py                # controller/contact-geometry/probe
+		contact.py                  # add_sliding_point_contact (ExponentialContactForce, forza reale alternativa ad add_point_on_plane_constraint)
 		rotation.py / translation.py  # rotate_object/translate_object
+		geometry.py                 # euclidean_distance -- pura geometria, nessun OpenSimModel coinvolto
 		_shared.py / _spatial.py    # interno: helper generici condivisi fra i file sopra
 	_cad_import.py                 # interno: lettura STEP/STP e generazione mesh per OpenSimModel.from_step
 	_primitives.py                 # interno: writer mesh STL per box/cilindro/sfera, usati da operators/primitives.py e da components/box.py
@@ -46,7 +48,7 @@ src/opensim_models/
 				rajagopalaiulrich2023.osim  # modello OpenSim base di User
 				meshes/*.vtp            # mesh per il rendering di User
 	components/
-		__init__.py                 # wrapper Python-friendly (Body, Marker, Joint, ...) dietro gli accessori di OpenSimModel
+		__init__.py                 # wrapper Python-friendly (Body, Marker, Joint, OffsetFrame, WeldConstraint, PointConstraint, ConstantDistanceConstraint, ExponentialContactForce, ...) dietro gli accessori di OpenSimModel
 		box.py                      # Box(components.Body): parallelepipedo rigido generico
 		screen.py                   # Screen(components.Body): pannello plexiglass parametrico
 		assets/meshes/               # mesh generata automaticamente per Box/Screen, di default (vedi mesh_dir sotto)
@@ -62,6 +64,7 @@ tests/
 	test_user_generated_code_is_fresh.py  # verifica che _posture_generated.py/_joint_centers_generated.py siano allineati alle tabelle
 	test_screen.py                 # test esaustivi di Screen (dimensionamento, posa, mesh)
 	test_box.py                    # test esaustivi di Box (dimensioni/massa, posa live, spigoli, mesh)
+	test_geometry.py               # test di operators.euclidean_distance (nessuna dipendenza da OpenSim)
 	test_cad_import.py             # test di OpenSimModel.from_step (richiede pythonocc-core)
 ```
 
@@ -457,6 +460,54 @@ Se `obj` è un intero modello, la copia restituita **è** il modello stesso (ruo
 
 `model.rotate(origin, direction, angle_deg, inplace=True)` e `model.translate(direction, inplace=True)` (ereditati da `OpenSimModel`, usati sopra) sono scorciatoie equivalenti a chiamare `operators.rotate_object`/`operators.translate_object` passando il modello stesso come primo argomento -- comode quando si lavora già con un'istanza di modello e non si vuole importare `operators` esplicitamente.
 
+Il `PhysicalOffsetFrame` di un giunto menzionato sopra è ora anche accessibile direttamente, già wrappato, senza passare da `rotate_object`/`translate_object`: `joint.parent_frame`/`joint.child_frame` restituiscono un `components.OffsetFrame` (quando il frame è davvero un `PhysicalOffsetFrame`, sempre vero per i giunti di questo pacchetto e per quelli del modello Rajagopal bundlato), con `translation`/`set_translation`, `orientation_deg`/`set_orientation_deg` e la coppia `position_global`/`position_local` (quest'ultima uguale a `translation`) già viste per `Body`/`Marker`/`Joint`/`ContactGeometry`:
+
+```python
+child_frame = user.joint("hip_r").child_frame
+print(child_frame.translation)       # offset locale rispetto al femore
+print(child_frame.position_global)   # stesso punto, nel ground frame
+```
+
+**Attenzione**: se questo frame è il parent/child frame di un giunto (non, ad esempio, il frame di un `WeldConstraint`), `set_translation`/`set_orientation_deg` spostano il **corpo** a cui il frame appartiene, non il frame stesso nel ground frame -- un giunto esiste apposta per far coincidere i suoi due frame, quindi `position_global` di questo frame resta invariato dopo la modifica (confermato direttamente). Per spostare un punto a un target preciso nel ground frame usa `rotate_object`/`translate_object`, che risolvono per te il valore locale corretto invece di limitarsi a scrivere quello richiesto.
+
+### Vincoli e contatto con punti dedicati
+
+`add_weld_constraint`, `add_point_constraint` e `add_point_on_plane_constraint` restituiscono ora, rispettivamente, un `components.WeldConstraint`, `components.PointConstraint` o `components.ConstantDistanceConstraint` (non più il generico `Constraint`) -- idem per `model.constraints`, che dispatcha automaticamente al tipo più specifico disponibile per ogni vincolo già nel modello. Ciascuno espone i propri punti, nel ground frame e nel frame locale:
+
+```python
+weld = operators.add_weld_constraint(model, "w1", body1, body2, position1=(0.1, 0, 0))
+print(weld.point1_global, weld.point1_local)   # punto su body1
+print(weld.point2_global, weld.point2_local)   # punto su body2
+print(weld.frame1, weld.frame2)                # ciascuno un components.OffsetFrame
+
+point = operators.add_point_constraint(model, "p1", ground, (0, 0, 0), body, (0.1, 0, 0))
+print(point.point1_global, point.point2_global)
+
+plane = operators.add_point_on_plane_constraint(model, "pl1", body, pt, plane_body, plane_pt, normal)
+print(plane.point1_global)   # il punto vincolato
+print(plane.point2_global)   # l'ancora calcolata, NON plane_pt -- vedi la sua docstring
+print(plane.distance)
+```
+
+Un `opensim.CoordinateCouplerConstraint` (costruito con `add_coordinate_coupler_constraint`) non ha un punto spaziale singolo: resta wrappato nel generico `Constraint`, invariato.
+
+Analogamente, `add_sliding_point_contact` restituisce ora un `components.ExponentialContactForce`, con `point_global` (il punto di contatto, la "station" nativa di OpenSim) e `plane_point_global` (un punto sul piano) -- **senza** l'equivalente locale per nessuno dei due: confermato direttamente che questa forza non espone i propri riferimenti a corpo/frame come `Socket` OpenSim (`getSocketNames()` è vuoto) né una `getStation()` utilizzabile dai binding Python di questa installazione, quindi non c'è modo di risalire al corpo/frame originale da questo solo oggetto.
+
+### Relazioni tra componenti (`parents`)
+
+Ogni wrapper per cui "da cosa dipende"/"a cosa è collegato" ha un senso espone anche una property `parents` (una tupla, mai una lista, come `Box.corners`), nei due versi:
+
+- **in avanti** (il componente conosce già il proprio riferimento): `Marker.parents` -- il body a cui è agganciato (1 elemento); `Joint.parents` -- `(parent_body, child_body)`, risolti fino al corpo/ground reale anche quando il frame è un `OffsetFrame` intermedio; `Muscle.parents` -- ogni body distinto attraversato dal percorso (via `getGeometryPath().getPathPointSet()`, duplicati rimossi); `ContactGeometry.parents` -- il body a cui è attaccata; `WeldConstraint`/`PointConstraint`/`ConstantDistanceConstraint.parents` -- `(body1, body2)`; `OffsetFrame.parents` -- il body/ground del proprio frame genitore.
+- **all'indietro** (nessun riferimento nativo, va cercato): `Body.parents` -- ogni `Joint`/`Muscle`/vincolo-con-wrapper-dedicato/`Marker` del modello che referenzia quel body, trovato scansionando `model.joints`/`model.muscles`/`model.constraints`/`model.markers` e controllando quali elencano quel body nel proprio `parents` (in avanti). **Costo**: a differenza di tutte le altre property di questo modulo (che leggono un singolo valore), `Body.parents` visita ogni componente di quelle quattro categorie ad ogni lettura, senza cache -- evita di chiamarlo in un ciclo stretto su molti body.
+
+```python
+femur = user.body("femur_r")
+for parent in femur.parents:
+    print(type(parent).__name__, parent.name)   # Joint hip_r, Joint walker_knee_r, Muscle glmax1_r, ...
+```
+
+Non tutti i tipi concreti hanno un `parents`: un `opensim.CoordinateCouplerConstraint` (nessun body/frame referenziato, solo coordinate) resta sul generico `Constraint`, senza `parents`; `ExponentialContactForce` non lo espone per lo stesso motivo documentato sopra per `plane_point_local` (nessun riferimento a corpo/frame recuperabile dai binding). `Body.parents` salta entrambi i casi di conseguenza.
+
 ## Dati ANSUR risolti
 
 Il caricamento del CSV ANSUR e il calcolo dei percentili (`load_ansur`, `resolve_reference`) sono dettagli implementativi interni di `User`, non parte della superficie pubblica del package (vedi sopra). I valori risolti restano comunque accessibili dopo aver costruito un `User`, tramite la proprietà `anthropometry`:
@@ -758,15 +809,16 @@ Per eseguire l'intera suite (test statistici sui dati ANSUR e test di integrazio
 python -m pytest -q
 ```
 
-- `tests/test_model.py` copre `OpenSimModel` in modo esaustivo: caricamento (da file, vuoto, file mancante), sblocco delle coordinate, accessori nominati, gestione di coordinate (posizione, velocità)/marker/muscoli/massa dei corpi, `update_state()` (propagazione a quantità derivate, comportamento "grezzo" dei setter), `reinitialize()` (inclusa la coerenza di coordinate accoppiate da un `CoordinateCouplerConstraint`), `copy()` (indipendenza del modello copiato, preservazione di postura e di attributi delle sottoclassi), scaling, export (inclusa la copia delle mesh in `Geometry/`), cartelle di geometria, `rotate()`/`translate()` (corretta delega a `operators.rotate_object`/`translate_object`, inclusa la copia indipendente restituita con `inplace=False`) e l'intera composizione di modelli (`add_model`, `remove_model`, `__add__`, `__radd__`, rinomina automatica sulle collisioni, preservazione della postura degli operandi, controlli di tipo).
+- `tests/test_model.py` copre `OpenSimModel` in modo esaustivo: caricamento (da file, vuoto, file mancante), sblocco delle coordinate, accessori nominati, gestione di coordinate (posizione, velocità)/marker/muscoli/massa dei corpi, `position_global`/`position_local` su `Body`/`Marker`/`Joint` (verificati contro le chiamate OpenSim native equivalenti), `Joint.parent_frame`/`child_frame` e il wrapper `OffsetFrame` risultante (`translation`/`set_translation`, `orientation_deg`/`set_orientation_deg`, relativa validazione), `parents` in avanti (`Marker`, `Joint`, `OffsetFrame`) e all'indietro (`Body`, verificato sul modello Rajagopal reale: `femur_r` trova esattamente i 3 giunti, i muscoli e i marker attesi, e nessun vincolo/forza generici), `update_state()` (propagazione a quantità derivate, comportamento "grezzo" dei setter), `reinitialize()` (inclusa la coerenza di coordinate accoppiate da un `CoordinateCouplerConstraint`), `copy()` (indipendenza del modello copiato, preservazione di postura e di attributi delle sottoclassi), scaling, export (inclusa la copia delle mesh in `Geometry/`), cartelle di geometria, `rotate()`/`translate()` (corretta delega a `operators.rotate_object`/`translate_object`, inclusa la copia indipendente restituita con `inplace=False`) e l'intera composizione di modelli (`add_model`, `remove_model`, `__add__`, `__radd__`, rinomina automatica sulle collisioni, preservazione della postura degli operandi, controlli di tipo).
 - `tests/test_model_wrapper_signatures.py` verifica che ognuno dei 26 convenience method di `OpenSimModel` che delegano a `opensim_models.operators` (`add_body`, `add_weld_joint`, `attach_component`, ...) abbia esattamente la stessa firma (nomi, ordine, default) della funzione omonima in `operators` -- una rete di sicurezza contro il disallineamento fra le due, che altrimenti nessun test rileverebbe.
 - `tests/test_user.py` copre `User` in modo esaustivo: caricamento e validazione dei dati ANSUR (eseguibili anche senza OpenSim installato), risoluzione di percentile/altezza (inclusa l'estrapolazione PCHIP fuori range con `UserWarning`), scaling antropometrico, massa totale (default dal `weight_kg` ANSUR risolto, override esplicito con `mass_kg`, invarianza della geometria dei segmenti rispetto alla massa, fattore di `scaleMass` uniforme su ogni corpo, validazione, `copy()`, e la ricalibrazione post-costruzione con `set_mass_kg` inclusa la preservazione della postura), ogni singolo setter di postura e la relativa property di lettura, ogni centro articolare (confrontato con la posizione OpenSim nativa) e il dizionario `joint_centers`, le misure derivate geometricamente (lunghezze di coscia/gamba/braccio/avambraccio, altezza del tronco, larghezza spalle) e quelle lette direttamente da ANSUR (circonferenze, profondità, larghezze, inclusa la stima a sezione circolare di coscia/polpaccio), `com`/`cop`/`set_position`, e l'integrazione con la facade ereditata da `OpenSimModel`.
 - `tests/test_user_generated_code_is_fresh.py` verifica che `_posture_generated.py`/`_joint_centers_generated.py` corrispondano esattamente a quanto produrrebbe `scripts/generate_user_code.py` a partire dalle tabelle correnti, e che i due mixin espongano esattamente i nomi attesi dalle tabelle -- fallisce se una tabella viene modificata senza rigenerare i file.
-- `tests/test_screen.py` copre `Screen` in modo esaustivo: dimensionamento (esplicito, da diagonale, priorità e fallback tra i due), posa (`center_*`/`angle_deg`), struttura del modello (un corpo, un `WeldJoint`), rigenerazione della mesh sui setter e registrazione della cartella di geometria.
-- `tests/test_box.py` copre `Box` in modo esaustivo: massa/inerzia (default, esplicita, analitica per un parallelepipedo pieno) e relativa validazione (dimensioni/massa non positive), `origin`/`angle_deg`/`com` alla costruzione, `set_origin`/`set_angle_deg` (ciascuno preserva l'altra metà della posa), il fatto che `origin`/`angle_deg`/`corners` restino sempre coerenti con la posa corrente (anche dopo `rotate()`/`translate()` ereditati, e attraverso un setter di dimensione, che preserva la posa durante la ricostruzione), gli 8 spigoli (valori attesi e comportamento rigido sotto traslazione), struttura del modello (un corpo, un `WeldJoint`), indipendenza delle istanze, `copy()`, e rigenerazione della mesh sui setter.
+- `tests/test_screen.py` copre `Screen` in modo esaustivo: dimensionamento (esplicito, da diagonale, priorità e fallback tra i due), posa (`center_*`/`angle_deg`, `origin`/`set_origin` -- quest'ultimo analogo a `Box`), `position_global`/`position_local`, struttura del modello (un corpo, un `WeldJoint`), rigenerazione della mesh sui setter e registrazione della cartella di geometria.
+- `tests/test_box.py` copre `Box` in modo esaustivo: massa/inerzia (default, esplicita, analitica per un parallelepipedo pieno) e relativa validazione (dimensioni/massa non positive), `origin`/`angle_deg`/`com` alla costruzione (inclusa la loro equivalenza con `position_global`/`inclination` ereditati, di cui sono ora alias), `set_origin`/`set_angle_deg` (ciascuno preserva l'altra metà della posa), il fatto che `origin`/`angle_deg`/`corners` restino sempre coerenti con la posa corrente (anche dopo `rotate()`/`translate()` ereditati, e attraverso un setter di dimensione, che preserva la posa durante la ricostruzione), gli 8 spigoli (valori attesi e comportamento rigido sotto traslazione), struttura del modello (un corpo, un `WeldJoint`), indipendenza delle istanze, `copy()`, e rigenerazione della mesh sui setter.
 - `tests/test_cad_import.py` copre `OpenSimModel.from_step`: massa/inerzia calcolate correttamente da un solido di riferimento (con conversione di unità), generazione della mesh, giunti verso ground di default, combinazione di più solidi in un unico corpo (`as_one_object`, di default e disattivata) e relativi errori (file mancante, STEP senza solidi).
-- `tests/test_operators.py` copre `opensim_models.operators`: `add_component`/`remove_component` generici e i relativi errori, i wrapper nominati per corpi/giunti/forze-muscoli/marker/vincoli, i costruttori di giunto nominati (gradi di libertà, posizione/orientamento), i corpi a forma primitiva (massa/inerzia analitiche, geometria nativa vs mesh generata, tipo di giunto, batching), il collegamento di mesh esistenti a un corpo, l'uso di `structural_change()` per un batch di modifiche correlate (corpo+giunto), la preservazione della postura delle coordinate non toccate dalla modifica strutturale, e `rotate_object`/`translate_object` (mutazione in place di marker e `PhysicalOffsetFrame`, sola lettura su `Body`/`Joint`, perno/oggetto esterni come componente o coordinata, funzionamento standalone senza modello, rotazione/traslazione rigida dell'intero modello attraverso i suoi giunti agganciati al ground, `inplace=False` -- copia indipendente del modello o dell'oggetto, originale invariato -- ed i relativi errori).
-- `tests/test_operators_public_api.py` verifica che lo split di `operators.py` in package (vedi "Contenuto del progetto") non abbia cambiato la superficie pubblica: `operators.__all__` elenca esattamente gli stessi nomi di prima, tutti risolvono a un callable, e `from opensim_models.operators import *` funziona ancora.
+- `tests/test_operators.py` copre `opensim_models.operators`: `add_component`/`remove_component` generici e i relativi errori, i wrapper nominati per corpi/giunti/forze-muscoli/marker/vincoli, i costruttori di giunto nominati (gradi di libertà, posizione/orientamento), i corpi a forma primitiva (massa/inerzia analitiche, geometria nativa vs mesh generata, tipo di giunto, batching), il collegamento di mesh esistenti a un corpo, l'uso di `structural_change()` per un batch di modifiche correlate (corpo+giunto), la preservazione della postura delle coordinate non toccate dalla modifica strutturale, `position_global`/`position_local` su `ContactGeometry`, il dispatch di `add_weld_constraint`/`add_point_constraint`/`add_point_on_plane_constraint`/`add_sliding_point_contact` (e di `model.constraints`/`model.forces`) verso il wrapper più specifico (`WeldConstraint`, `PointConstraint`, `ConstantDistanceConstraint`, `ExponentialContactForce`, con i rispettivi punti verificati numericamente, inclusa una regressione sul bug per cui un vincolo/forza riletto da `model.constraints`/`model.forces` -- a differenza di uno appena restituito da `add_*` -- veniva wrappato nel tipo specifico ma con `.raw` ancora genericamente tipato, rompendo silenziosamente `.parents`/i suoi punti dietro un `getattr(..., "parents", ())`), `parents` in avanti su `Muscle` (deduplica i body del percorso) e `ContactGeometry`, e `parents` sui tre sottotipi di `Constraint` verificato anche "all'indietro" tramite `Body.parents`, la conferma che `add_coordinate_coupler_constraint`/un muscolo restino sul wrapper generico (`Constraint`/`Force`, mai promossi), e `rotate_object`/`translate_object` (mutazione in place di marker e `PhysicalOffsetFrame`/`OffsetFrame`, sola lettura su `Body`/`Joint`, perno/oggetto esterni come componente o coordinata, funzionamento standalone senza modello, rotazione/traslazione rigida dell'intero modello attraverso i suoi giunti agganciati al ground, `inplace=False` -- copia indipendente del modello o dell'oggetto, originale invariato -- ed i relativi errori).
+- `tests/test_operators_public_api.py` verifica che lo split di `operators.py` in package (vedi "Contenuto del progetto") non abbia cambiato la superficie pubblica: `operators.__all__` elenca esattamente gli stessi nomi di prima (`euclidean_distance` incluso), tutti risolvono a un callable, e `from opensim_models.operators import *` funziona ancora.
+- `tests/test_geometry.py` copre `operators.euclidean_distance`: un caso noto (triangolo 3-4-5), punti coincidenti, simmetria, input come liste/array numpy, tipo di ritorno, e validazione (dimensione sbagliata, valori non finiti) -- l'unico file di test che non richiede i binding OpenSim installati, dato che la funzione è pura geometria.
 - `tests/test_player.py` copre la logica pura (senza una finestra/visualizzatore reale) di `opensim_models._gui.player`: `MotionData` (conversione gradi->radianti solo sulle coordinate rotazionali quando `inDegrees=yes`, nessuna conversione su quelle traslazionali, interpolazione lineare e clamp fuori range, colonne che non sono coordinate del modello, errori su tabelle troppo corte) e `MotionPlayer` (play/pause, stop, cycle, avanti/indietro veloce con i relativi limiti e la ripartenza dal verso opposto, wraparound in avanti/indietro con `loop`, seek, e i relativi errori di costruzione). Il collegamento a una finestra Tk reale, l'incorporamento nativo Win32 della vista 3D, la navigazione della camera, il tooltip ed il salvataggio di immagine/animazione (`opensim_models._gui.export`) non sono automatizzati: richiedono un display e un contesto OpenGL reali, verificati manualmente.
 
 I test che richiedono i binding OpenSim vengono saltati automaticamente se il modulo `opensim` non è importabile; quelli di `test_cad_import.py` vengono saltati se `pythonocc-core` non è importabile; i test sui soli dati ANSUR restano eseguibili in ogni caso.

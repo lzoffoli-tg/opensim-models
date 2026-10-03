@@ -193,9 +193,12 @@ def add_sliding_point_contact(
 
     Returns
     -------
-    components.Force
-        The newly created ``ExponentialContactForce``, wrapped in the thin,
-        generic :class:`~opensim_models.components.Force`.
+    components.ExponentialContactForce
+        The newly created ``ExponentialContactForce``, wrapped in
+        :class:`~opensim_models.components.ExponentialContactForce`, which
+        exposes ``point_global`` (the station on ``body``) and
+        ``plane_point_global`` (a point on the plane) -- see that class's
+        own docstring for why neither has a ``..._local`` counterpart.
 
     Raises
     ------
@@ -263,4 +266,4 @@ def add_sliding_point_contact(
     force.setSettleVelocity(float(settle_velocity))
 
     add_component(model, "force", force, reinitialize=reinitialize)
-    return components.Force(model, force)
+    return components._wrap_force(model, force)

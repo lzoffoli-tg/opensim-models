@@ -6,6 +6,7 @@ from typing import Any
 
 import numpy as np
 
+from .. import components
 from ..model import OpenSimModel
 from ._shared import _unwrap
 from ._spatial import (
@@ -47,22 +48,28 @@ def _translate_offset_frame(
 
     ``direction_vector`` is a displacement, in ground frame: unlike a
     position, it does not need converting by the parent's position, only
-    by its orientation (:meth:`PhysicalOffsetFrame.set_translation` is
-    relative to the parent frame's own axes).
+    by its orientation (``PhysicalOffsetFrame``'s own ``translation`` is
+    relative to the parent frame's own axes). Reads/writes ``obj``'s own
+    translation through :class:`~opensim_models.components.OffsetFrame`
+    (its ``translation``/``set_translation``) rather than raw SWIG calls;
+    the parent side still goes through the generic, type-agnostic
+    :func:`_resolve_ground_position`/:func:`_rotation_matrix_in_ground`
+    helpers, since ``parent`` can be any kind of frame, not necessarily a
+    ``PhysicalOffsetFrame`` itself.
 
     Does not call :meth:`~opensim_models.model.OpenSimModel.reinitialize`:
     callers moving several frames together (see
     :func:`_translate_whole_model`) do that once, after the whole batch.
     """
     opensim = model.opensim
+    offset_frame = components.OffsetFrame(model, obj)
     parent = opensim.PhysicalFrame.safeDownCast(obj.getParentFrame())
     parent_position = np.array(_resolve_ground_position(parent, model), dtype=float)
     parent_rotation = _rotation_matrix_in_ground(model, parent)
 
     local_delta = parent_rotation.T @ direction_vector
-    current_local_translation = np.array(obj.get_translation().to_numpy(), dtype=float)
-    new_local_translation = current_local_translation + local_delta
-    obj.set_translation(opensim.Vec3(*new_local_translation))
+    new_local_translation = np.array(offset_frame.translation, dtype=float) + local_delta
+    offset_frame.set_translation(tuple(new_local_translation))
 
     new_position = parent_position + parent_rotation @ new_local_translation
     return tuple(float(value) for value in new_position)
