@@ -584,7 +584,15 @@ class Screen(Body):
             mass * (width_m**2 + height_m**2) / 12.0,
         )
 
-        mesh_path = self._mesh_dir / _MESH_FILENAME
+        # Named per self._name (not the fixed _MESH_FILENAME), so two
+        # Screens sharing the same mesh_dir get their own mesh file instead
+        # of overwriting each other's -- same fix, same reasoning, as
+        # opensim_models.components.box.Box._rebuild. Defaults to
+        # _MESH_FILENAME exactly (self._name defaults to _BODY_NAME, see
+        # __init__), so an unnamed Screen's mesh path is unchanged from
+        # before this existed.
+        mesh_filename = f"{self._name}.stl"
+        mesh_path = self._mesh_dir / mesh_filename
         _write_box_mesh(mesh_path, width_mm, height_mm, _THICKNESS_MM)
 
         container = self._container
@@ -597,7 +605,7 @@ class Screen(Body):
             container.opensim.Inertia(*inertia),
         )
         container.model.addBody(body)
-        body.attachGeometry(container.opensim.Mesh(_MESH_FILENAME))
+        body.attachGeometry(container.opensim.Mesh(mesh_filename))
 
         joint = container.opensim.WeldJoint(
             _JOINT_NAME,
