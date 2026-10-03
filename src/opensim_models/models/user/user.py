@@ -118,6 +118,22 @@ class User(OpenSimModel, _PostureMixin, _JointCenterMixin):
         factors = segment_scale_factors(self._reference, baseline)
         self.scale_bodies(self._expand_bilateral_bodies(factors))
 
+        # rotate and translate to have body centered on CoP and
+        # alignment consistent to the convention:
+        # X --> lateral axis
+        # Y --> vertical axis
+        # Z --> antero-posterior axis
+        self.translate(
+            direction=tuple(float(-i) for i in self.cop),
+            inplace=True,
+        )
+        self.rotate(
+            origin=self.cop,
+            direction=(0, 1, 0),
+            angle_deg=-90,
+            inplace=True,
+        )
+
     @property
     def gender(self):
         """Return the normalized sex code used to resolve this user's anthropometry.
@@ -212,7 +228,10 @@ class User(OpenSimModel, _PostureMixin, _JointCenterMixin):
             ``"right_ankle"``, ...) to that joint's centre as an ``(x, y,
             z)`` position in the ground frame, in metres.
         """
-        return {name: self._joint_center(joint) for name, joint in _JOINT_CENTER_NAMES.items()}
+        return {
+            name: self._joint_center(joint)
+            for name, joint in _JOINT_CENTER_NAMES.items()
+        }
 
     def _marker_location(self, marker_name: str) -> tuple[float, float, float]:
         self.model.realizePosition(self.state)
@@ -238,7 +257,10 @@ class User(OpenSimModel, _PostureMixin, _JointCenterMixin):
             ``"right_toe"``, ``"left_mt5"``, ...) to that marker's location
             as an ``(x, y, z)`` position in the ground frame, in metres.
         """
-        return {name: self._marker_location(marker) for name, marker in _FOOT_MARKER_NAMES.items()}
+        return {
+            name: self._marker_location(marker)
+            for name, marker in _FOOT_MARKER_NAMES.items()
+        }
 
     @property
     def left_heel(self) -> tuple[float, float, float]:
@@ -398,9 +420,13 @@ class User(OpenSimModel, _PostureMixin, _JointCenterMixin):
         if not all(math.isfinite(value) for value in (x, y, z, *reference)):
             raise ValueError("position must be finite")
         targets = (x, y, z)
-        for name, target, current in zip(_PELVIS_TRANSLATION_COORDINATES, targets, reference):
+        for name, target, current in zip(
+            _PELVIS_TRANSLATION_COORDINATES, targets, reference
+        ):
             coordinate = self.coordinate(name)
-            coordinate.set_value(coordinate.value + (target - current), enforce_constraints=False)
+            coordinate.set_value(
+                coordinate.value + (target - current), enforce_constraints=False
+            )
         self.update_state()
 
     @property
@@ -481,7 +507,9 @@ class User(OpenSimModel, _PostureMixin, _JointCenterMixin):
         float
             Hip-to-knee distance, in metres.
         """
-        return math.dist(self._joint_center("hip_l"), self._joint_center("walker_knee_l"))
+        return math.dist(
+            self._joint_center("hip_l"), self._joint_center("walker_knee_l")
+        )
 
     @property
     def right_thigh_length(self) -> float:
@@ -496,7 +524,9 @@ class User(OpenSimModel, _PostureMixin, _JointCenterMixin):
         float
             Hip-to-knee distance, in metres.
         """
-        return math.dist(self._joint_center("hip_r"), self._joint_center("walker_knee_r"))
+        return math.dist(
+            self._joint_center("hip_r"), self._joint_center("walker_knee_r")
+        )
 
     @property
     def left_shank_length(self) -> float:
@@ -511,7 +541,9 @@ class User(OpenSimModel, _PostureMixin, _JointCenterMixin):
         float
             Knee-to-ankle distance, in metres.
         """
-        return math.dist(self._joint_center("walker_knee_l"), self._joint_center("ankle_l"))
+        return math.dist(
+            self._joint_center("walker_knee_l"), self._joint_center("ankle_l")
+        )
 
     @property
     def right_shank_length(self) -> float:
@@ -527,7 +559,9 @@ class User(OpenSimModel, _PostureMixin, _JointCenterMixin):
         float
             Knee-to-ankle distance, in metres.
         """
-        return math.dist(self._joint_center("walker_knee_r"), self._joint_center("ankle_r"))
+        return math.dist(
+            self._joint_center("walker_knee_r"), self._joint_center("ankle_r")
+        )
 
     @property
     def torso_height(self) -> float:
@@ -551,7 +585,9 @@ class User(OpenSimModel, _PostureMixin, _JointCenterMixin):
             self._joint_center("acromial_r"),
         )
         hip_center = tuple((a + b) / 2 for a, b in zip(left_hip, right_hip))
-        shoulder_center = tuple((a + b) / 2 for a, b in zip(left_shoulder, right_shoulder))
+        shoulder_center = tuple(
+            (a + b) / 2 for a, b in zip(left_shoulder, right_shoulder)
+        )
         return math.dist(hip_center, shoulder_center)
 
     @property
@@ -570,7 +606,9 @@ class User(OpenSimModel, _PostureMixin, _JointCenterMixin):
         float
             Shoulder-to-shoulder distance, in metres.
         """
-        return math.dist(self._joint_center("acromial_l"), self._joint_center("acromial_r"))
+        return math.dist(
+            self._joint_center("acromial_l"), self._joint_center("acromial_r")
+        )
 
     @property
     def biacromial_breadth(self) -> float:
@@ -603,7 +641,9 @@ class User(OpenSimModel, _PostureMixin, _JointCenterMixin):
         float
             Shoulder-to-elbow distance, in metres.
         """
-        return math.dist(self._joint_center("acromial_l"), self._joint_center("elbow_l"))
+        return math.dist(
+            self._joint_center("acromial_l"), self._joint_center("elbow_l")
+        )
 
     @property
     def right_arm_length(self) -> float:
@@ -619,7 +659,9 @@ class User(OpenSimModel, _PostureMixin, _JointCenterMixin):
         float
             Shoulder-to-elbow distance, in metres.
         """
-        return math.dist(self._joint_center("acromial_r"), self._joint_center("elbow_r"))
+        return math.dist(
+            self._joint_center("acromial_r"), self._joint_center("elbow_r")
+        )
 
     @property
     def left_forearm_length(self) -> float:
@@ -635,7 +677,9 @@ class User(OpenSimModel, _PostureMixin, _JointCenterMixin):
         float
             Elbow-to-wrist distance, in metres.
         """
-        return math.dist(self._joint_center("elbow_l"), self._joint_center("radius_hand_l"))
+        return math.dist(
+            self._joint_center("elbow_l"), self._joint_center("radius_hand_l")
+        )
 
     @property
     def right_forearm_length(self) -> float:
@@ -651,7 +695,9 @@ class User(OpenSimModel, _PostureMixin, _JointCenterMixin):
         float
             Elbow-to-wrist distance, in metres.
         """
-        return math.dist(self._joint_center("elbow_r"), self._joint_center("radius_hand_r"))
+        return math.dist(
+            self._joint_center("elbow_r"), self._joint_center("radius_hand_r")
+        )
 
     @property
     def left_palm_length(self) -> float:
@@ -1090,4 +1136,3 @@ class User(OpenSimModel, _PostureMixin, _JointCenterMixin):
                 if candidate in self.bodies:
                     expanded[candidate] = values
         return expanded
-
