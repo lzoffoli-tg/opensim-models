@@ -34,7 +34,8 @@ importing this module directly.
 
 Organized one file per component category (``bodies``, ``joints``,
 ``attachment``, ``primitives``, ``forces``, ``markers``, ``constraints``,
-``auxiliary`` for controllers/contact-geometry/probes) plus ``rotation``/
+``auxiliary`` for controllers/contact-geometry/probes, ``contact`` for the
+real, force-based ``add_sliding_point_contact``) plus ``rotation``/
 ``translation`` and their shared ``_spatial`` helpers -- this module just
 re-exports every public name from all of them, so ``opensim_models.operators.<name>``
 resolves exactly as it did when this was a single flat file.
@@ -65,6 +66,7 @@ from .constraints import (
     add_weld_constraint,
     add_point_constraint,
     add_coordinate_coupler_constraint,
+    add_point_on_plane_constraint,
 )
 from .auxiliary import (
     add_controller,
@@ -74,6 +76,7 @@ from .auxiliary import (
     add_probe,
     remove_probe,
 )
+from .contact import add_sliding_point_contact
 from .rotation import rotate_object
 from .translation import translate_object
 
@@ -104,12 +107,14 @@ __all__ = [
     "add_weld_constraint",
     "add_point_constraint",
     "add_coordinate_coupler_constraint",
+    "add_point_on_plane_constraint",
     "add_controller",
     "remove_controller",
     "add_contact_geometry",
     "remove_contact_geometry",
     "add_probe",
     "remove_probe",
+    "add_sliding_point_contact",
     "rotate_object",
     "translate_object",
 ]

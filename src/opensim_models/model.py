@@ -903,6 +903,132 @@ class OpenSimModel:
         self.model.finalizeConnections()
         self.state = self.model.initSystem()
 
+    def settle_under_gravity(
+        self,
+        duration_s: float,
+        *,
+        accuracy: float = 1e-4,
+        max_step_size_s: float = 0.01,
+    ) -> None:
+        """Forward-integrate the model in place, e.g. to let a contact force settle to equilibrium.
+
+        Wraps ``opensim.Manager`` (the one supported way to run forward
+        dynamics in OpenSim) to advance :attr:`state` from its current time
+        by ``duration_s`` seconds, under whatever forces are present --
+        gravity (already enabled by default on every ``opensim.Model``,
+        ``(0, -9.80665, 0)``, unless changed via ``self.model.setGravity``),
+        muscles, and any contact force such as one added by
+        :meth:`add_sliding_point_contact`. There is no separate "did it
+        reach equilibrium" check: call this with a ``duration_s`` long
+        enough for the quantity you care about (e.g. a contact point's
+        height) to stop changing, inspecting it yourself between calls if
+        needed (each call resumes from the end of the previous one, since
+        it integrates from :attr:`state`'s *current* time).
+
+        **A confirmed, deterministic native-crash gotcha this method
+        refuses to run into**: ``opensim.Manager.initialize()`` segfaults
+        the process (not a catchable exception) whenever the model contains
+        a plain ``opensim.FreeJoint`` (its combined 6-dof mobilizer),
+        regardless of gravity, forces, or posture -- confirmed directly
+        with a minimal repro (a single free-floating body, no forces at
+        all) and narrowed down against every other built-in joint type
+        (``PinJoint``, ``BallJoint``, ``SliderJoint``, and a hand-built
+        6-dof ``CustomJoint`` -- the style :class:`~opensim_models.models.user.User`'s
+        own root joint already uses -- all integrate without incident).
+        This method checks for one up front and raises ``RuntimeError``
+        instead of segfaulting; if you need an unconstrained free body,
+        compose its 6 dof from a ``BallJoint`` + ``SliderJoint`` pair or a
+        ``CustomJoint`` instead of ``add_free_joint``/``opensim.FreeJoint``.
+
+        **A second, confirmed but non-deterministic native-crash risk this
+        method does *not* guard against**: the same class of native
+        acceleration-stage crash already documented on :meth:`update_state`
+        (some muscle-driven models crash ``Model.realizeAcceleration``
+        outright) also strikes through ``opensim.Manager`` -- confirmed
+        directly on OpenSim's own bundled ``arm26.osim`` example model
+        (two muscles, no ``FreeJoint`` anywhere, official documented
+        ``Manager`` usage, no custom code involved beyond loading the
+        file), while an equally simple hand-built single-muscle model
+        integrated without issue. Unlike the ``FreeJoint`` case above,
+        there is no known, cheap, reliable way to detect this in advance --
+        if :attr:`model` has muscles, treat calling this method as a risk
+        you are accepting, the same as the existing ``realizeAcceleration``
+        risk on :meth:`update_state`, and verify on your actual model
+        (small ``duration_s`` first) before relying on it in a longer
+        batch/sweep.
+
+        **A third native gotcha this method works around rather than just
+        documenting**: the ``opensim.State`` that ``Manager.integrate()``
+        returns is not independent of the ``Manager``/integrator that
+        produced it -- confirmed directly that using it again (even just
+        ``realizePosition``) after the ``Manager`` instance has been
+        garbage-collected segfaults the process, which would happen
+        unavoidably here since ``Manager`` is a local variable created
+        fresh on every call. This method copies the returned state
+        (``opensim.State``'s own copy constructor) before returning, so
+        :attr:`state` is safe to keep using normally afterward; this is
+        purely an implementation detail, mentioned here only so a future
+        change to this method doesn't drop that copy by accident.
+
+        Parameters
+        ----------
+        duration_s : float
+            How long to integrate, in seconds, starting from :attr:`state`'s
+            current time. Must be finite and strictly positive.
+        accuracy : float, optional
+            Target relative accuracy passed to
+            ``Manager.setIntegratorAccuracy``. Defaults to ``1e-4``
+            (tighter, i.e. smaller, than OpenSim's own default of ``1e-3``
+            -- contact forces are comparatively stiff, see
+            ``max_step_size_s`` below). Must be finite and strictly
+            positive.
+        max_step_size_s : float, optional
+            Upper bound on the integrator's own adaptive step size, in
+            seconds, passed to ``Manager.setIntegratorMaximumStepSize``.
+            Defaults to ``0.01`` -- left at OpenSim's own default (no
+            bound), a contact force's stiff normal spring can make the
+            adaptive integrator pick step sizes so small that a short
+            ``duration_s`` appears to hang; a small explicit upper bound
+            trades a bit of accuracy for a predictable wall-clock cost.
+            Must be finite and strictly positive.
+
+        Raises
+        ------
+        RuntimeError
+            If the model contains an ``opensim.FreeJoint`` (see above).
+        ValueError
+            If ``duration_s``, ``accuracy`` or ``max_step_size_s`` is not
+            finite or not strictly positive.
+        """
+        duration_s = self._positive(duration_s)
+        accuracy = self._positive(accuracy)
+        max_step_size_s = self._positive(max_step_size_s)
+
+        for joint in _iter_set(self.model.getJointSet()):
+            if self.opensim.FreeJoint.safeDownCast(joint) is not None:
+                raise RuntimeError(
+                    f"settle_under_gravity: joint {joint.getName()!r} is an "
+                    "opensim.FreeJoint -- confirmed to crash opensim.Manager "
+                    "natively (a process segfault, not a catchable exception) "
+                    "regardless of gravity/forces present. Replace it with a "
+                    "BallJoint+SliderJoint pair, or a CustomJoint built like "
+                    "User's own 6-dof root joint, before calling this method."
+                )
+
+        self.model.realizePosition(self.state)
+        manager = self.opensim.Manager(self.model)
+        manager.setIntegratorAccuracy(accuracy)
+        manager.setIntegratorMaximumStepSize(max_step_size_s)
+        manager.initialize(self.state)
+        # Confirmed directly: the opensim.State Manager.integrate() returns
+        # is NOT independent of `manager` -- once `manager` (a local
+        # variable here) is garbage-collected, using that state again
+        # (even just realizePosition) segfaults the process. Copying it
+        # (opensim.State's own copy constructor) before `manager` goes out
+        # of scope at the end of this method is what makes the result safe
+        # to keep using afterward.
+        self.state = self.opensim.State(manager.integrate(self.state.getTime() + duration_s))
+
     @contextlib.contextmanager
     def structural_change(self):
         """Context manager wrapping a batch of component additions/removals.
@@ -2277,6 +2403,94 @@ class OpenSimModel:
             self, name, body1, position1, body2, position2, reinitialize=reinitialize
         )
 
+    def add_point_on_plane_constraint(
+        self,
+        name: str,
+        body: Any,
+        point: tuple[float, float, float],
+        plane_body: Any,
+        plane_point: tuple[float, float, float],
+        plane_normal: tuple[float, float, float],
+        *,
+        anchor_distance: float = 50.0,
+        reinitialize: bool = False,
+    ) -> "components.Constraint":
+        """Approximately constrain a point on ``body`` to a plane fixed on ``plane_body``.
+
+        A thin wrapper equivalent to ``operators.add_point_on_plane_constraint(self,
+        name, body, point, plane_body, plane_point, plane_normal, ...)``: see
+        :func:`~opensim_models.operators.add_point_on_plane_constraint` for
+        the full semantics (imported locally, see :meth:`add_body`) --
+        including why this is a ``ConstantDistanceConstraint``-based
+        approximation rather than an exact plane constraint (no exact
+        single-equation point-on-plane constraint is exposed anywhere in
+        this project's bound ``opensim``/``opensim.simbody`` modules), its
+        quantified accuracy (``~t**2 / (2 * anchor_distance)`` off-plane
+        error for a tangential slide of ``t``), and a native-crash gotcha
+        it exists specifically to avoid (reads ``self``'s current posture
+        to compute a constraint radius that is exactly satisfied there,
+        rather than risking a mismatched one).
+
+        Removes 1 relative degree of freedom (approximately along the
+        plane's normal); ``body`` stays free to slide in the other two,
+        in-plane directions -- e.g. a pelvis/torso/humerus landmark resting
+        on, and free to slide along, a backrest or pad surface.
+
+        Parameters
+        ----------
+        name : str
+            Name for the new constraint.
+        body : opensim.PhysicalFrame or components wrapper
+            The body whose point is constrained to the plane.
+        point : tuple[float, float, float]
+            The constrained point, in metres, in ``body``'s own local
+            frame.
+        plane_body : opensim.PhysicalFrame or components wrapper
+            The body the contact plane is fixed to.
+        plane_point : tuple[float, float, float]
+            A point on the plane, in metres, in ``plane_body``'s own local
+            frame.
+        plane_normal : tuple[float, float, float]
+            The plane's normal direction, in ``plane_body``'s own local
+            frame. Need not be a unit vector.
+        anchor_distance : float, optional
+            Distance, in metres, from ``plane_point`` to the constraint's
+            sphere anchor, along the negative ``plane_normal`` direction.
+            Defaults to ``50.0``; larger values tighten the approximation
+            over a larger sliding range.
+        reinitialize : bool, optional
+            When ``True``, rebuild the system immediately after adding,
+            preserving the current posture/velocity. Defaults to
+            ``False``.
+
+        Returns
+        -------
+        components.Constraint
+            The newly created ``ConstantDistanceConstraint``, wrapped.
+
+        Raises
+        ------
+        ValueError
+            If ``plane_normal`` is the zero vector, ``anchor_distance`` is
+            not finite or not strictly positive, or the resulting
+            constraint radius would be non-positive (``body``'s point is
+            on the far side of the plane from the anchor -- try flipping
+            ``plane_normal``'s sign).
+        """
+        from . import operators
+
+        return operators.add_point_on_plane_constraint(
+            self,
+            name,
+            body,
+            point,
+            plane_body,
+            plane_point,
+            plane_normal,
+            anchor_distance=anchor_distance,
+            reinitialize=reinitialize,
+        )
+
     def add_coordinate_coupler_constraint(
         self,
         name: str,
@@ -2390,6 +2604,112 @@ class OpenSimModel:
 
         return operators.add_contact_geometry(
             self, contact_geometry, reinitialize=reinitialize
+        )
+
+    def add_sliding_point_contact(
+        self,
+        name: str,
+        body: Any,
+        point: tuple[float, float, float],
+        plane_body: Any,
+        plane_point: tuple[float, float, float],
+        plane_normal: tuple[float, float, float],
+        *,
+        static_friction: float = 0.5,
+        dynamic_friction: float = 0.2,
+        settle_velocity: float = 0.01,
+        reinitialize: bool = False,
+    ) -> "components.Force":
+        """Add a real (force-based) sliding contact between a point on ``body`` and a plane on ``plane_body``.
+
+        A thin wrapper equivalent to
+        ``operators.add_sliding_point_contact(self, name, body, point,
+        plane_body, plane_point, plane_normal, ...)``: see
+        :func:`~opensim_models.operators.add_sliding_point_contact` for the
+        full semantics (imported locally, see :meth:`add_body`) --
+        including why this is built on ``opensim.ExponentialContactForce``
+        rather than the ``ContactSphere``/``ContactHalfSpace`` +
+        ``HuntCrossleyForce``/``ElasticFoundationForce`` combination one
+        might expect (that combination's ``ContactParameters`` nested class
+        is not reachable from Python in this installation, and the
+        "flattened" setters that look like a substitute segfault at the
+        acceleration stage), and the two real limitations this approach
+        keeps: the contact plane is a static property baked in from
+        ``plane_body``'s pose *right now*, not a live attachment (it will
+        not follow ``plane_body`` if it moves afterward); and the plane is
+        infinite (not clipped to ``plane_body``'s actual footprint, e.g. a
+        ``Box``'s finite face -- confirmed empirically, see the operator's
+        own docstring).
+
+        Builds a genuine contact force (elastic/damped repulsion plus
+        static/kinetic friction), not a kinematic constraint: unlike
+        :meth:`add_point_on_plane_constraint`, ``body``'s point does not
+        need to already be on the plane when this is called (any starting
+        position works), is free to settle onto it under gravity over time
+        (see :meth:`settle_under_gravity`) rather than being pinned there
+        instantly, and friction is actually modelled (the constraint-based
+        alternative has none).
+
+        Parameters
+        ----------
+        name : str
+            Name for the new force.
+        body : opensim.PhysicalFrame or components wrapper
+            The body whose point is in contact with the plane. Must not be
+            attached to ground by a plain ``opensim.FreeJoint`` -- see
+            :meth:`settle_under_gravity` for why and for safe alternatives.
+        point : tuple[float, float, float]
+            The contact point, in metres, in ``body``'s own local frame.
+        plane_body : opensim.PhysicalFrame or components wrapper
+            The body the contact plane is fixed to.
+        plane_point : tuple[float, float, float]
+            A point on the plane, in metres, in ``plane_body``'s own local
+            frame.
+        plane_normal : tuple[float, float, float]
+            The plane's normal direction, in ``plane_body``'s own local
+            frame. Need not be a unit vector.
+        static_friction : float, optional
+            Coefficient of static (non-sliding) friction. Defaults to
+            ``0.5``.
+        dynamic_friction : float, optional
+            Coefficient of kinetic (sliding) friction. Must not exceed
+            ``static_friction``. Defaults to ``0.2``.
+        settle_velocity : float, optional
+            Sliding speed, in m/s, below which static (rather than
+            kinetic) friction applies. Must be finite and strictly
+            positive. Defaults to ``0.01``.
+        reinitialize : bool, optional
+            When ``True``, rebuild the system immediately after adding,
+            preserving the current posture/velocity. Defaults to
+            ``False``.
+
+        Returns
+        -------
+        components.Force
+            The newly created ``ExponentialContactForce``, wrapped in the
+            thin, generic :class:`~opensim_models.components.Force`.
+
+        Raises
+        ------
+        ValueError
+            If ``plane_normal`` is the zero vector, ``dynamic_friction`` is
+            negative or exceeds ``static_friction``, or ``settle_velocity``
+            is not finite or not strictly positive.
+        """
+        from . import operators
+
+        return operators.add_sliding_point_contact(
+            self,
+            name,
+            body,
+            point,
+            plane_body,
+            plane_point,
+            plane_normal,
+            static_friction=static_friction,
+            dynamic_friction=dynamic_friction,
+            settle_velocity=settle_velocity,
+            reinitialize=reinitialize,
         )
 
     def add_probe(self, probe: Any, *, reinitialize: bool = False) -> "components.Probe":

@@ -149,6 +149,14 @@ class Screen(Body):
         default location isn't writable (e.g. an admin-owned install) or
         to collect a model's generated meshes somewhere else of your
         choosing.
+    name : str or None, optional
+        OpenSim name for the panel's body. Defaults to ``None``, meaning
+        ``"screen_panel"`` -- equivalent to leaving this unset and calling
+        :meth:`set_name` right after construction, except it skips that
+        extra rename (and the ``finalizeConnections()`` it triggers). Once
+        set, the name sticks across any rebuild (any setter above, or
+        :meth:`set_name` itself) and across :meth:`copy`, same as every
+        other attribute of this panel.
 
     Raises
     ------
@@ -169,6 +177,7 @@ class Screen(Body):
         center_z: float = 0.0,
         angle_deg: float = 90,
         mesh_dir: str | Path | None = None,
+        name: str | None = None,
     ) -> None:
         """Build the panel body/joint from the given size and pose parameters."""
         # A private, never-exposed OpenSimModel -- see the class docstring
@@ -186,6 +195,7 @@ class Screen(Body):
         self._center_y = center_y
         self._center_z = center_z
         self._angle_deg = angle_deg
+        self._name = name if name is not None else _BODY_NAME
         self._rebuild()
 
     @property
@@ -504,8 +514,9 @@ class Screen(Body):
         Screen
             A fresh ``Screen`` built from this one's current
             ``width_mm``/``height_mm``/``inches``/``ratio``/``center_x``/
-            ``center_y``/``center_z``/``angle_deg``/``mesh_dir`` -- its own
-            private container, entirely independent of this panel's.
+            ``center_y``/``center_z``/``angle_deg``/``mesh_dir``/``name``
+            -- its own private container, entirely independent of this
+            panel's.
         """
         return Screen(
             width_mm=self._width_mm,
@@ -517,7 +528,29 @@ class Screen(Body):
             center_z=self._center_z,
             angle_deg=self._angle_deg,
             mesh_dir=self._mesh_dir,
+            name=self._name,
         )
+
+    def set_name(self, name: str) -> None:
+        """Rename this panel's body, and keep the name across any future rebuild.
+
+        Any size/pose setter (:meth:`set_width_mm`, :meth:`set_height_mm`,
+        :meth:`set_inches`, :meth:`set_ratio`, :meth:`set_center_x`,
+        :meth:`set_center_y`, :meth:`set_center_z`, :meth:`set_angle_deg`)
+        tears down and recreates the underlying ``opensim.Body`` from
+        scratch (see :meth:`_rebuild`); overriding the base
+        :meth:`~opensim_models.components.Body.set_name` to also remember
+        ``name`` here is what makes a rename survive that, instead of
+        silently reverting to ``"screen_panel"`` (or whatever ``name`` was
+        passed to the constructor) on the next rebuild.
+
+        Parameters
+        ----------
+        name : str
+            New OpenSim name.
+        """
+        super().set_name(name)
+        self._name = name
 
     def _resolve_size_mm(self) -> tuple[float, float]:
         """Return the effective (width_mm, height_mm), applying the sizing priority.
@@ -558,7 +591,7 @@ class Screen(Body):
         container.model = container.opensim.Model()
         container.model.setName("Screen")
         body = container.opensim.Body(
-            _BODY_NAME,
+            self._name,
             mass,
             container.opensim.Vec3(0, 0, 0),
             container.opensim.Inertia(*inertia),
@@ -585,4 +618,4 @@ class Screen(Body):
         # previous body/joint SWIG proxies (and this wrapper's own
         # inherited `_owner`/`_raw`) are now stale -- re-point them at the
         # fresh body, same as any other _ComponentWrapper construction.
-        super().__init__(container, container.model.getBodySet().get(_BODY_NAME))
+        super().__init__(container, container.model.getBodySet().get(self._name))

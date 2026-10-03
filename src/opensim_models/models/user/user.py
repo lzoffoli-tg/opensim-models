@@ -119,22 +119,6 @@ class User(OpenSimModel, _PostureMixin, _JointCenterMixin):
         factors = segment_scale_factors(self._reference, baseline)
         self.scale_bodies(self._expand_bilateral_bodies(factors))
 
-        # rotate and translate to have body centered on CoP and
-        # alignment consistent to the convention:
-        # X --> lateral axis
-        # Y --> vertical axis
-        # Z --> antero-posterior axis
-        self.translate(
-            direction=tuple(float(-i) for i in self.cop),
-            inplace=True,
-        )
-        self.rotate(
-            origin=self.cop,
-            direction=(0, 1, 0),
-            angle_deg=-90,
-            inplace=True,
-        )
-
     @property
     def gender(self):
         """Return the normalized sex code used to resolve this user's anthropometry.

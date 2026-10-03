@@ -88,6 +88,14 @@ class Box(Body):
         default location isn't writable (e.g. an admin-owned install) or
         to collect a model's generated meshes somewhere else of your
         choosing.
+    name : str or None, optional
+        OpenSim name for the box's body. Defaults to ``None``, meaning
+        ``"box"`` -- equivalent to leaving this unset and calling
+        :meth:`set_name` right after construction, except it skips that
+        extra rename (and the ``finalizeConnections()`` it triggers). Once
+        set, the name sticks across any rebuild (a dimension/mass/pose
+        setter, or :meth:`set_name` itself) and across :meth:`copy`, same
+        as every other attribute of this box.
 
     Raises
     ------
@@ -105,6 +113,7 @@ class Box(Body):
         angle_deg: tuple[float, float, float] = (0.0, 0.0, 0.0),
         mass_kg: float = 1.0,
         mesh_dir: str | Path | None = None,
+        name: str | None = None,
     ) -> None:
         """Build the box body/joint from the given dimensions, pose and mass."""
         # A private, never-exposed OpenSimModel: just enough of a container
@@ -120,6 +129,7 @@ class Box(Body):
         self._height = _positive(height)
         self._depth = _positive(depth)
         self._mass_kg = _positive(mass_kg)
+        self._name = name if name is not None else _BODY_NAME
         self._rebuild(origin=origin, angle_deg=angle_deg)
 
     @property
@@ -466,8 +476,8 @@ class Box(Body):
         Box
             A fresh ``Box`` built from this one's current
             ``width``/``height``/``depth``/``mass_kg``/``origin``/``angle_deg``/
-            ``mesh_dir`` -- its own private container, entirely independent
-            of this box's.
+            ``mesh_dir``/``name`` -- its own private container, entirely
+            independent of this box's.
         """
         return Box(
             self._width,
@@ -477,7 +487,28 @@ class Box(Body):
             angle_deg=self.angle_deg,
             mass_kg=self._mass_kg,
             mesh_dir=self._mesh_dir,
+            name=self._name,
         )
+
+    def set_name(self, name: str) -> None:
+        """Rename this box's body, and keep the name across any future rebuild.
+
+        A dimension/mass/pose setter (:meth:`set_width`, :meth:`set_height`,
+        :meth:`set_depth`, :meth:`set_mass_kg`, :meth:`set_origin`,
+        :meth:`set_angle_deg`) tears down and recreates the underlying
+        ``opensim.Body`` from scratch (see :meth:`_rebuild`); overriding the
+        base :meth:`~opensim_models.components.Body.set_name` to also
+        remember ``name`` here is what makes a rename survive that, instead
+        of silently reverting to ``"box"`` (or whatever ``name`` was passed
+        to the constructor) on the next rebuild.
+
+        Parameters
+        ----------
+        name : str
+            New OpenSim name.
+        """
+        super().set_name(name)
+        self._name = name
 
     def _rebuild(
         self, *, origin: tuple[float, float, float], angle_deg: tuple[float, float, float]
@@ -498,7 +529,7 @@ class Box(Body):
         container.model = container.opensim.Model()
         container.model.setName("Box")
         body = container.opensim.Body(
-            _BODY_NAME, mass, container.opensim.Vec3(0, 0, 0), container.opensim.Inertia(*inertia)
+            self._name, mass, container.opensim.Vec3(0, 0, 0), container.opensim.Inertia(*inertia)
         )
         container.model.addBody(body)
         body.attachGeometry(container.opensim.Mesh(_MESH_FILENAME))
@@ -522,4 +553,4 @@ class Box(Body):
         # previous `body`/joint SWIG proxies (and this wrapper's own
         # inherited `_owner`/`_raw`) are now stale -- re-point them at the
         # fresh body, same as any other _ComponentWrapper construction.
-        super().__init__(container, container.model.getBodySet().get(_BODY_NAME))
+        super().__init__(container, container.model.getBodySet().get(self._name))
