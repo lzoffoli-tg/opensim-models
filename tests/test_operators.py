@@ -111,6 +111,29 @@ def test_attach_component_reattaches_to_a_new_parent_at_com():
     assert "parent" in joint.raw.getParentFrame().getName()
 
 
+def test_attach_component_tilts_a_slider_axis_with_parent_orientation_deg():
+    model = make_model()
+    parent = add_free_body(model, "parent")
+    child = add_free_body(model, "child")
+
+    joint = operators.attach_component(
+        model, child.raw, to=parent.raw,
+        child_point=(0.0, 0.0, 0.0), parent_point=(0.0, 0.0, 0.0),
+        parent_orientation_deg=(0.0, 0.0, 45.0),
+        joint_type="slider", reinitialize=True,
+    )
+
+    coordinate = next(iter(joint.coordinates.values()))
+    coordinate.set_value(1.0, enforce_constraints=False)
+    model.update_state()
+    model.model.realizePosition(model.state)
+
+    position = child.raw.getPositionInGround(model.state)
+    assert (position.get(0), position.get(1)) == pytest.approx(
+        (math.cos(math.radians(45.0)), math.sin(math.radians(45.0)))
+    )
+
+
 def test_attach_component_resolves_explicit_points():
     model = make_model()
     parent = add_free_body(model, "parent")
@@ -153,6 +176,15 @@ def test_attach_component_rejects_a_component_not_yet_in_the_model():
 
     with pytest.raises(ValueError, match="not connected by any joint"):
         operators.attach_component(model, lone_box.raw, to=parent.raw)
+
+
+def test_attach_component_rejects_an_unknown_joint_type():
+    model = make_model()
+    parent = add_free_body(model, "parent")
+    child = add_free_body(model, "child")
+
+    with pytest.raises(ValueError, match="Unknown joint_type"):
+        operators.attach_component(model, child.raw, to=parent.raw, joint_type="bogus")
 
 
 # ---------------------------------------------------------------------------

@@ -149,12 +149,18 @@ def add_component(
     Returns
     -------
     Any
-        ``component``, for chaining.
+        ``component`` itself, unchanged and unwrapped -- the same object
+        passed in, now owned by ``model``. Unlike the category-specific
+        functions built on top of this one (e.g. :func:`add_body`,
+        :func:`add_force`, :func:`add_marker`), this generic function does
+        not wrap the result in a :mod:`opensim_models.components` class,
+        since it has no way to know which wrapper (if any) suits ``kind``.
 
     Raises
     ------
     ValueError
-        If ``kind`` is not a recognized component category.
+        If ``kind`` is not one of the recognized component categories
+        listed above.
     """
     component_set = _component_set(model, kind)
     if reinitialize:
@@ -265,7 +271,12 @@ def add_body(
     Returns
     -------
     components.Body
-        The newly created body.
+        The newly created body, wrapped in
+        :class:`~opensim_models.components.Body`, which exposes
+        ``.mass``/``.set_mass()`` and the read-only, state-dependent
+        ``.com``/``.inclination``/``.corners`` (ground-frame centre of
+        mass, orientation, and bounding-box corners) on top of the common
+        ``.name``/``.raw``/``.set_name()``.
     """
     body = model.opensim.Body(
         name,
@@ -299,6 +310,11 @@ def remove_body(
         Name of the body to remove.
     reinitialize : bool, optional
         See :func:`add_component`.
+
+    Raises
+    ------
+    ValueError
+        If no body named ``name`` exists in the model.
     """
     remove_component(model, "body", name, reinitialize=reinitialize)
 
@@ -318,16 +334,21 @@ def add_joint(model: "OpenSimModel", joint: Any, *, reinitialize: bool = False) 
     ----------
     model : OpenSimModel
         Model to add the joint to.
-    joint : opensim.Joint
+    joint : opensim.Joint or components.Joint
         The already-constructed joint, e.g.
         ``model.opensim.FreeJoint(name, model.model.getGround(), body)``.
+        A :class:`~opensim_models.components.Joint` wrapper is also
+        accepted and unwrapped automatically (see :func:`_unwrap`).
     reinitialize : bool, optional
         See :func:`add_component`.
 
     Returns
     -------
     components.Joint
-        ``joint``, wrapped, for chaining.
+        ``joint``, wrapped in :class:`~opensim_models.components.Joint`,
+        which exposes ``.coordinates`` -- a ``{name: Coordinate}`` dict for
+        every degree of freedom this joint owns -- on top of the common
+        ``.name``/``.raw``/``.set_name()``.
     """
     joint = _unwrap(joint)
     add_component(model, "joint", joint, reinitialize=reinitialize)
@@ -347,6 +368,11 @@ def remove_joint(
         Name of the joint to remove.
     reinitialize : bool, optional
         See :func:`add_component`.
+
+    Raises
+    ------
+    ValueError
+        If no joint named ``name`` exists in the model.
     """
     remove_component(model, "joint", name, reinitialize=reinitialize)
 
@@ -377,7 +403,14 @@ def _add_offset_joint(
 ) -> Any:
     child_body = _unwrap(child_body)
     parent_frame = _unwrap(parent_frame)
-    joint_class = getattr(model.opensim, _JOINT_CLASSES[joint_type])
+    try:
+        joint_class_name = _JOINT_CLASSES[joint_type]
+    except KeyError as error:
+        valid = ", ".join(sorted(_JOINT_CLASSES))
+        raise ValueError(
+            f"Unknown joint_type {joint_type!r}; expected one of {valid}"
+        ) from error
+    joint_class = getattr(model.opensim, joint_class_name)
     joint = joint_class(
         name,
         parent_frame if parent_frame is not None else model.model.getGround(),
@@ -434,7 +467,10 @@ def add_free_joint(
     Returns
     -------
     components.Joint
-        The newly created joint, wrapped.
+        The newly created joint, wrapped in
+        :class:`~opensim_models.components.Joint`, which exposes
+        ``.coordinates`` -- a ``{name: Coordinate}`` dict with this
+        joint's 6 degrees of freedom (3 rotational, 3 translational).
     """
     return _add_offset_joint(
         model,
@@ -464,14 +500,45 @@ def add_pin_joint(
 ) -> Any:
     """Construct an ``opensim.PinJoint`` (1 rotational dof, about its Z axis) and add it.
 
-    Parameters are the same as :func:`add_free_joint`; the pin's rotation
-    axis is the Z axis of its own joint frame, so use ``orientation_deg``
-    to point that axis wherever the hinge should rotate about.
+    Same attachment-point/orientation shape as :func:`add_free_joint`; the
+    pin's rotation axis is the Z axis of its own joint frame, so use
+    ``orientation_deg`` to point that axis wherever the hinge should
+    rotate about.
+
+    Parameters
+    ----------
+    model : OpenSimModel
+        Model to add the joint to.
+    name : str
+        Name for the new joint.
+    child_body : opensim.Body
+        Body the joint connects (its origin becomes the joint's child
+        frame, offset by ``child_position``/``child_orientation_deg``).
+    parent_frame : opensim.PhysicalFrame or None, optional
+        Frame the joint connects ``child_body`` to. Defaults to
+        ``model.model.getGround()``.
+    position : tuple[float, float, float], optional
+        Joint location in ``parent_frame``, in metres. With the body's own
+        ``mass_center`` left at the origin (see :func:`add_body`), this is
+        the body's centre of mass position in ``parent_frame``.
+    orientation_deg : tuple[float, float, float], optional
+        Joint orientation in ``parent_frame``, as X-Y-Z body-fixed Euler
+        angles in degrees about ``parent_frame``'s own axes -- this is
+        what points the pin's Z (rotation) axis in ``parent_frame``.
+    child_position, child_orientation_deg : tuple[float, float, float], optional
+        Same as ``position``/``orientation_deg``, but for the offset on
+        ``child_body``'s side of the joint. Defaults to no offset (the
+        joint sits at the body's origin/mass centre with no added tilt).
+    reinitialize : bool, optional
+        See :func:`add_component`.
 
     Returns
     -------
     components.Joint
-        The newly created joint, wrapped.
+        The newly created joint, wrapped in
+        :class:`~opensim_models.components.Joint`, whose ``.coordinates``
+        dict has exactly one entry (the pin's single rotational dof,
+        in radians, about its own Z axis).
     """
     return _add_offset_joint(
         model,
@@ -501,12 +568,42 @@ def add_ball_joint(
 ) -> Any:
     """Construct an ``opensim.BallJoint`` (3 rotational dof) and add it.
 
-    Parameters are the same as :func:`add_free_joint`.
+    Same attachment-point/orientation shape as :func:`add_free_joint`,
+    minus the 3 translational dof (a ``BallJoint`` only rotates, like a
+    shoulder).
+
+    Parameters
+    ----------
+    model : OpenSimModel
+        Model to add the joint to.
+    name : str
+        Name for the new joint.
+    child_body : opensim.Body
+        Body the joint connects (its origin becomes the joint's child
+        frame, offset by ``child_position``/``child_orientation_deg``).
+    parent_frame : opensim.PhysicalFrame or None, optional
+        Frame the joint connects ``child_body`` to. Defaults to
+        ``model.model.getGround()``.
+    position : tuple[float, float, float], optional
+        Joint location in ``parent_frame``, in metres. With the body's own
+        ``mass_center`` left at the origin (see :func:`add_body`), this is
+        the body's centre of mass position in ``parent_frame``.
+    orientation_deg : tuple[float, float, float], optional
+        Joint orientation in ``parent_frame``, as X-Y-Z body-fixed Euler
+        angles in degrees about ``parent_frame``'s own axes.
+    child_position, child_orientation_deg : tuple[float, float, float], optional
+        Same as ``position``/``orientation_deg``, but for the offset on
+        ``child_body``'s side of the joint. Defaults to no offset (the
+        joint sits at the body's origin/mass centre with no added tilt).
+    reinitialize : bool, optional
+        See :func:`add_component`.
 
     Returns
     -------
     components.Joint
-        The newly created joint, wrapped.
+        The newly created joint, wrapped in
+        :class:`~opensim_models.components.Joint`, whose ``.coordinates``
+        dict has 3 entries (the ball's 3 rotational dof, in radians).
     """
     return _add_offset_joint(
         model,
@@ -536,14 +633,44 @@ def add_slider_joint(
 ) -> Any:
     """Construct an ``opensim.SliderJoint`` (1 translational dof, along its X axis) and add it.
 
-    Parameters are the same as :func:`add_free_joint`; the slider's
-    translation axis is the X axis of its own joint frame, so use
+    Same attachment-point/orientation shape as :func:`add_free_joint`; the
+    slider's translation axis is the X axis of its own joint frame, so use
     ``orientation_deg`` to point that axis wherever it should slide along.
+
+    Parameters
+    ----------
+    model : OpenSimModel
+        Model to add the joint to.
+    name : str
+        Name for the new joint.
+    child_body : opensim.Body
+        Body the joint connects (its origin becomes the joint's child
+        frame, offset by ``child_position``/``child_orientation_deg``).
+    parent_frame : opensim.PhysicalFrame or None, optional
+        Frame the joint connects ``child_body`` to. Defaults to
+        ``model.model.getGround()``.
+    position : tuple[float, float, float], optional
+        Joint location in ``parent_frame``, in metres. With the body's own
+        ``mass_center`` left at the origin (see :func:`add_body`), this is
+        the body's centre of mass position in ``parent_frame``.
+    orientation_deg : tuple[float, float, float], optional
+        Joint orientation in ``parent_frame``, as X-Y-Z body-fixed Euler
+        angles in degrees about ``parent_frame``'s own axes -- this is
+        what points the slider's X (sliding) axis in ``parent_frame``.
+    child_position, child_orientation_deg : tuple[float, float, float], optional
+        Same as ``position``/``orientation_deg``, but for the offset on
+        ``child_body``'s side of the joint. Defaults to no offset (the
+        joint sits at the body's origin/mass centre with no added tilt).
+    reinitialize : bool, optional
+        See :func:`add_component`.
 
     Returns
     -------
     components.Joint
-        The newly created joint, wrapped.
+        The newly created joint, wrapped in
+        :class:`~opensim_models.components.Joint`, whose ``.coordinates``
+        dict has exactly one entry (the slider's single translational dof,
+        in metres, along its own X axis).
     """
     return _add_offset_joint(
         model,
@@ -573,12 +700,42 @@ def add_weld_joint(
 ) -> Any:
     """Construct an ``opensim.WeldJoint`` (0 dof, rigid attachment) and add it.
 
-    Parameters are the same as :func:`add_free_joint`.
+    Same attachment-point/orientation shape as :func:`add_free_joint`, but
+    with no degrees of freedom: once placed, ``child_body`` cannot move
+    relative to ``parent_frame`` at all.
+
+    Parameters
+    ----------
+    model : OpenSimModel
+        Model to add the joint to.
+    name : str
+        Name for the new joint.
+    child_body : opensim.Body
+        Body the joint connects (its origin becomes the joint's child
+        frame, offset by ``child_position``/``child_orientation_deg``).
+    parent_frame : opensim.PhysicalFrame or None, optional
+        Frame the joint connects ``child_body`` to. Defaults to
+        ``model.model.getGround()``.
+    position : tuple[float, float, float], optional
+        Joint location in ``parent_frame``, in metres. With the body's own
+        ``mass_center`` left at the origin (see :func:`add_body`), this is
+        the body's centre of mass position in ``parent_frame``.
+    orientation_deg : tuple[float, float, float], optional
+        Joint orientation in ``parent_frame``, as X-Y-Z body-fixed Euler
+        angles in degrees about ``parent_frame``'s own axes.
+    child_position, child_orientation_deg : tuple[float, float, float], optional
+        Same as ``position``/``orientation_deg``, but for the offset on
+        ``child_body``'s side of the joint. Defaults to no offset (the
+        joint sits at the body's origin/mass centre with no added tilt).
+    reinitialize : bool, optional
+        See :func:`add_component`.
 
     Returns
     -------
     components.Joint
-        The newly created joint, wrapped.
+        The newly created joint, wrapped in
+        :class:`~opensim_models.components.Joint`; its ``.coordinates``
+        dict is empty, since a weld joint has no degrees of freedom.
     """
     return _add_offset_joint(
         model,
@@ -620,6 +777,8 @@ def attach_component(
     to: Any,
     child_point: Any = "com",
     parent_point: Any = "com",
+    child_orientation_deg: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    parent_orientation_deg: tuple[float, float, float] = (0.0, 0.0, 0.0),
     joint_type: str = "weld",
     name: str | None = None,
     reinitialize: bool = False,
@@ -652,6 +811,15 @@ def attach_component(
     parent_point : ``"com"`` or tuple[float, float, float], optional
         Attachment point on ``to``, in its own local frame, in metres.
         ``"com"`` (default) uses ``to``'s centre of mass.
+    child_orientation_deg, parent_orientation_deg : tuple[float, float, float], optional
+        Orientation of the new joint's frame on each side, as X-Y-Z
+        body-fixed Euler degrees about that side's own local axes.
+        Defaults to no tilt. For a joint type with an axis that isn't
+        symmetric (e.g. a ``"slider"``, which slides along its own local
+        X) this is how to point that axis anywhere other than straight
+        along the parent's own X -- e.g. ``parent_orientation_deg=(0, 0,
+        30)`` tilts a slider's sliding direction by 30 degrees in the
+        parent's own XY plane.
     joint_type : str, optional
         One of ``"free"``, ``"pin"``, ``"ball"``, ``"slider"``, ``"weld"``
         (default) -- same joint types :func:`add_free_joint`/etc. build.
@@ -669,8 +837,12 @@ def attach_component(
     ------
     ValueError
         If ``child`` is not currently connected by any joint in ``model``
-        (e.g. it was never merged in, or was already removed).
+        (e.g. it was never merged in, or was already removed), or if
+        ``joint_type`` is not one of the five listed above.
     """
+    if joint_type not in _JOINT_CLASSES:
+        valid = ", ".join(sorted(_JOINT_CLASSES))
+        raise ValueError(f"Unknown joint_type {joint_type!r}; expected one of {valid}")
     child = _unwrap(child)
     to = _unwrap(to)
     current_joint = _joint_owning_body(model, child)
@@ -694,9 +866,9 @@ def attach_component(
             child,
             parent_frame=to,
             position=resolved_parent_point,
-            orientation_deg=(0.0, 0.0, 0.0),
+            orientation_deg=parent_orientation_deg,
             child_position=resolved_child_point,
-            child_orientation_deg=(0.0, 0.0, 0.0),
+            child_orientation_deg=child_orientation_deg,
             reinitialize=False,
         )
 
@@ -823,7 +995,16 @@ def add_box_body(
     Returns
     -------
     tuple[components.Body, components.Joint]
-        The newly created body and the joint connecting it to ground.
+        The newly created body, wrapped in
+        :class:`~opensim_models.components.Body` (exposing
+        ``.mass``/``.set_mass()`` and the read-only ``.com``/
+        ``.inclination``/``.corners``), and the joint connecting it to
+        ground (named ``f"{name}_joint"``), wrapped in
+        :class:`~opensim_models.components.Joint` (exposing
+        ``.coordinates``, whose size/unit depends on ``joint_type``: 0 for
+        ``"weld"``, 1 (radians) for ``"pin"``, 3 (radians) for ``"ball"``,
+        1 (metres) for ``"slider"``, or 6 (3 radians + 3 metres) for
+        ``"free"``).
 
     Raises
     ------
@@ -906,7 +1087,8 @@ def add_cylinder_body(
         Orientation relative to ground, as X-Y-Z body-fixed Euler angles in
         degrees about ground's own axes.
     joint_type : str, optional
-        See :func:`add_box_body`.
+        Joint connecting the body to ground: one of ``"weld"`` (default,
+        rigid), ``"free"``, ``"pin"``, ``"ball"`` or ``"slider"``.
     mesh : bool, optional
         When ``False`` (default), attach a lightweight native
         ``opensim.Cylinder`` geometry (no file written). When ``True``,
@@ -915,12 +1097,25 @@ def add_cylinder_body(
     mesh_dir : str, pathlib.Path or None, optional
         Directory to write the generated mesh file to, when ``mesh=True``.
     reinitialize : bool, optional
-        See :func:`add_box_body`.
+        When ``True`` (default ``False``), rebuild the system immediately,
+        preserving the current posture/velocity, so the model is ready to
+        use. Leave ``False`` and wrap several primitive-body calls in one
+        :meth:`OpenSimModel.structural_change` block to add them as a
+        batch, rebuilding the system only once.
 
     Returns
     -------
     tuple[components.Body, components.Joint]
-        The newly created body and the joint connecting it to ground.
+        The newly created body, wrapped in
+        :class:`~opensim_models.components.Body` (exposing
+        ``.mass``/``.set_mass()`` and the read-only ``.com``/
+        ``.inclination``/``.corners``), and the joint connecting it to
+        ground (named ``f"{name}_joint"``), wrapped in
+        :class:`~opensim_models.components.Joint` (exposing
+        ``.coordinates``, whose size/unit depends on ``joint_type``: 0 for
+        ``"weld"``, 1 (radians) for ``"pin"``, 3 (radians) for ``"ball"``,
+        1 (metres) for ``"slider"``, or 6 (3 radians + 3 metres) for
+        ``"free"``).
 
     Raises
     ------
@@ -997,7 +1192,8 @@ def add_sphere_body(
         Orientation relative to ground, as X-Y-Z body-fixed Euler angles in
         degrees about ground's own axes.
     joint_type : str, optional
-        See :func:`add_box_body`.
+        Joint connecting the body to ground: one of ``"weld"`` (default,
+        rigid), ``"free"``, ``"pin"``, ``"ball"`` or ``"slider"``.
     mesh : bool, optional
         When ``False`` (default), attach a lightweight native
         ``opensim.Sphere`` geometry (no file written). When ``True``,
@@ -1006,12 +1202,25 @@ def add_sphere_body(
     mesh_dir : str, pathlib.Path or None, optional
         Directory to write the generated mesh file to, when ``mesh=True``.
     reinitialize : bool, optional
-        See :func:`add_box_body`.
+        When ``True`` (default ``False``), rebuild the system immediately,
+        preserving the current posture/velocity, so the model is ready to
+        use. Leave ``False`` and wrap several primitive-body calls in one
+        :meth:`OpenSimModel.structural_change` block to add them as a
+        batch, rebuilding the system only once.
 
     Returns
     -------
     tuple[components.Body, components.Joint]
-        The newly created body and the joint connecting it to ground.
+        The newly created body, wrapped in
+        :class:`~opensim_models.components.Body` (exposing
+        ``.mass``/``.set_mass()`` and the read-only ``.com``/
+        ``.inclination``/``.corners``), and the joint connecting it to
+        ground (named ``f"{name}_joint"``), wrapped in
+        :class:`~opensim_models.components.Joint` (exposing
+        ``.coordinates``, whose size/unit depends on ``joint_type``: 0 for
+        ``"weld"``, 1 (radians) for ``"pin"``, 3 (radians) for ``"ball"``,
+        1 (metres) for ``"slider"``, or 6 (3 radians + 3 metres) for
+        ``"free"``).
 
     Raises
     ------
@@ -1057,17 +1266,26 @@ def add_force(model: "OpenSimModel", force: Any, *, reinitialize: bool = False) 
     ----------
     model : OpenSimModel
         Model to add the force to.
-    force : opensim.Force
+    force : opensim.Force or components.Force
         The already-constructed force/actuator, e.g. a
         ``opensim.Millard2012EquilibriumMuscle`` or
-        ``opensim.CoordinateActuator``.
+        ``opensim.CoordinateActuator``. A
+        :class:`~opensim_models.components.Force` (or other component)
+        wrapper is also accepted and unwrapped automatically (see
+        :func:`_unwrap`).
     reinitialize : bool, optional
         See :func:`add_component`.
 
     Returns
     -------
     components.Force
-        ``force``, wrapped, for chaining.
+        ``force``, wrapped in the thin, generic
+        :class:`~opensim_models.components.Force` (``.name``/``.raw``/
+        ``.set_name()`` only). This is true even if ``force`` is actually
+        a muscle: use :func:`add_muscle` instead of this function to get
+        back a :class:`~opensim_models.components.Muscle`, with its extra
+        ``max_isometric_force``/``optimal_fiber_length``/
+        ``tendon_slack_length``/``pennation_angle`` properties.
     """
     force = _unwrap(force)
     add_component(model, "force", force, reinitialize=reinitialize)
@@ -1087,6 +1305,12 @@ def remove_force(
         Name of the force to remove.
     reinitialize : bool, optional
         See :func:`add_component`.
+
+    Raises
+    ------
+    ValueError
+        If no force (muscle or otherwise) named ``name`` exists in the
+        model.
     """
     remove_component(model, "force", name, reinitialize=reinitialize)
 
@@ -1153,7 +1377,18 @@ def add_muscle(
     Returns
     -------
     components.Muscle
-        The newly created muscle, wrapped.
+        The newly created muscle, wrapped in
+        :class:`~opensim_models.components.Muscle`, which exposes
+        ``.max_isometric_force``/``.optimal_fiber_length``/
+        ``.tendon_slack_length``/``.pennation_angle`` (each with a
+        matching ``set_*()``) on top of the common ``.name``/``.raw``.
+
+    Raises
+    ------
+    AttributeError
+        If ``muscle_class`` does not name an attribute of
+        ``model.opensim`` (e.g. a typo, or a muscle type not present in
+        this build of OpenSim).
     """
     origin_component = _unwrap(origin_component)
     insertion_component = _unwrap(insertion_component)
@@ -1188,6 +1423,13 @@ def remove_muscle(
         Name of the muscle to remove.
     reinitialize : bool, optional
         See :func:`add_component`.
+
+    Raises
+    ------
+    ValueError
+        If no force named ``name`` exists in the model (note the error
+        message says "force", not "muscle" -- see :func:`remove_force`,
+        which this delegates to: muscles live in the same ``ForceSet``).
     """
     remove_force(model, name, reinitialize=reinitialize)
 
@@ -1201,15 +1443,21 @@ def add_marker(
     ----------
     model : OpenSimModel
         Model to add the marker to.
-    marker : opensim.Marker
-        The already-constructed marker.
+    marker : opensim.Marker or components.Marker
+        The already-constructed marker, e.g. ``opensim.Marker(name,
+        parent_frame, opensim.Vec3(x, y, z))``. A
+        :class:`~opensim_models.components.Marker` wrapper is also
+        accepted and unwrapped automatically (see :func:`_unwrap`).
     reinitialize : bool, optional
         See :func:`add_component`.
 
     Returns
     -------
     components.Marker
-        ``marker``, wrapped, for chaining.
+        ``marker``, wrapped in :class:`~opensim_models.components.Marker`,
+        which exposes ``.location``/``.set_location()`` (the marker's
+        ``(x, y, z)`` offset within its parent frame, in metres) on top of
+        the common ``.name``/``.raw``/``.set_name()``.
     """
     marker = _unwrap(marker)
     add_component(model, "marker", marker, reinitialize=reinitialize)
@@ -1229,6 +1477,11 @@ def remove_marker(
         Name of the marker to remove.
     reinitialize : bool, optional
         See :func:`add_component`.
+
+    Raises
+    ------
+    ValueError
+        If no marker named ``name`` exists in the model.
     """
     remove_component(model, "marker", name, reinitialize=reinitialize)
 
@@ -1242,16 +1495,23 @@ def add_constraint(
     ----------
     model : OpenSimModel
         Model to add the constraint to.
-    constraint : opensim.Constraint
+    constraint : opensim.Constraint or components.Constraint
         The already-constructed constraint, e.g. an
-        ``opensim.CoordinateCouplerConstraint``.
+        ``opensim.CoordinateCouplerConstraint``. A
+        :class:`~opensim_models.components.Constraint` wrapper is also
+        accepted and unwrapped automatically (see :func:`_unwrap`). For
+        the common constraint types, see the named, position-based
+        convenience functions instead: :func:`add_weld_constraint`,
+        :func:`add_point_constraint`, :func:`add_coordinate_coupler_constraint`.
     reinitialize : bool, optional
         See :func:`add_component`.
 
     Returns
     -------
     components.Constraint
-        ``constraint``, wrapped, for chaining.
+        ``constraint``, wrapped in the thin, generic
+        :class:`~opensim_models.components.Constraint` (``.name``/
+        ``.raw``/``.set_name()`` only).
     """
     constraint = _unwrap(constraint)
     add_component(model, "constraint", constraint, reinitialize=reinitialize)
@@ -1271,6 +1531,11 @@ def remove_constraint(
         Name of the constraint to remove.
     reinitialize : bool, optional
         See :func:`add_component`.
+
+    Raises
+    ------
+    ValueError
+        If no constraint named ``name`` exists in the model.
     """
     remove_component(model, "constraint", name, reinitialize=reinitialize)
 
@@ -1461,15 +1726,20 @@ def add_controller(
     ----------
     model : OpenSimModel
         Model to add the controller to.
-    controller : opensim.Controller
-        The already-constructed controller.
+    controller : opensim.Controller or components.Controller
+        The already-constructed controller, e.g. an
+        ``opensim.PrescribedController``. A
+        :class:`~opensim_models.components.Controller` wrapper is also
+        accepted and unwrapped automatically (see :func:`_unwrap`).
     reinitialize : bool, optional
         See :func:`add_component`.
 
     Returns
     -------
     components.Controller
-        ``controller``, wrapped, for chaining.
+        ``controller``, wrapped in the thin, generic
+        :class:`~opensim_models.components.Controller` (``.name``/
+        ``.raw``/``.set_name()`` only).
     """
     controller = _unwrap(controller)
     add_component(model, "controller", controller, reinitialize=reinitialize)
@@ -1489,6 +1759,11 @@ def remove_controller(
         Name of the controller to remove.
     reinitialize : bool, optional
         See :func:`add_component`.
+
+    Raises
+    ------
+    ValueError
+        If no controller named ``name`` exists in the model.
     """
     remove_component(model, "controller", name, reinitialize=reinitialize)
 
@@ -1502,16 +1777,20 @@ def add_contact_geometry(
     ----------
     model : OpenSimModel
         Model to add the contact geometry to.
-    contact_geometry : opensim.ContactGeometry
+    contact_geometry : opensim.ContactGeometry or components.ContactGeometry
         The already-constructed contact geometry, e.g. an
-        ``opensim.ContactSphere``.
+        ``opensim.ContactSphere``. A
+        :class:`~opensim_models.components.ContactGeometry` wrapper is
+        also accepted and unwrapped automatically (see :func:`_unwrap`).
     reinitialize : bool, optional
         See :func:`add_component`.
 
     Returns
     -------
     components.ContactGeometry
-        ``contact_geometry``, wrapped, for chaining.
+        ``contact_geometry``, wrapped in the thin, generic
+        :class:`~opensim_models.components.ContactGeometry` (``.name``/
+        ``.raw``/``.set_name()`` only).
     """
     contact_geometry = _unwrap(contact_geometry)
     add_component(model, "contact_geometry", contact_geometry, reinitialize=reinitialize)
@@ -1531,6 +1810,12 @@ def remove_contact_geometry(
         Name of the contact geometry to remove.
     reinitialize : bool, optional
         See :func:`add_component`.
+
+    Raises
+    ------
+    ValueError
+        If no contact geometry named ``name`` exists in the model (the
+        underlying error reports the category as ``"contact_geometry"``).
     """
     remove_component(model, "contact_geometry", name, reinitialize=reinitialize)
 
@@ -1542,15 +1827,19 @@ def add_probe(model: "OpenSimModel", probe: Any, *, reinitialize: bool = False) 
     ----------
     model : OpenSimModel
         Model to add the probe to.
-    probe : opensim.Probe
-        The already-constructed probe.
+    probe : opensim.Probe or components.Probe
+        The already-constructed probe, e.g. an ``opensim.Umberger2010MuscleMetabolicsProbe``.
+        A :class:`~opensim_models.components.Probe` wrapper is also
+        accepted and unwrapped automatically (see :func:`_unwrap`).
     reinitialize : bool, optional
         See :func:`add_component`.
 
     Returns
     -------
     components.Probe
-        ``probe``, wrapped, for chaining.
+        ``probe``, wrapped in the thin, generic
+        :class:`~opensim_models.components.Probe` (``.name``/``.raw``/
+        ``.set_name()`` only).
     """
     probe = _unwrap(probe)
     add_component(model, "probe", probe, reinitialize=reinitialize)
@@ -1570,6 +1859,11 @@ def remove_probe(
         Name of the probe to remove.
     reinitialize : bool, optional
         See :func:`add_component`.
+
+    Raises
+    ------
+    ValueError
+        If no probe named ``name`` exists in the model.
     """
     remove_component(model, "probe", name, reinitialize=reinitialize)
 

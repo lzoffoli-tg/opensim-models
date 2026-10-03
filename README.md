@@ -597,6 +597,16 @@ merged.attach_component(
 
 `attach_component` rimuove il giunto attuale di `child` e ne crea uno nuovo (stesso tipo di `add_free_joint`/`add_pin_joint`/.../`add_weld_joint`, scelto con `joint_type`) verso `to`, nel punto indicato da `child_point`/`parent_point` -- `"com"` (default, centro di massa) oppure una tupla `(x, y, z)` esplicita nel frame locale del corpo. `child`/`to` devono già appartenere allo stesso modello (un `Joint` OpenSim non può mai collegare due `opensim.Model` diversi): per un componente standalone, questo significa fonderlo prima con `+`, come nell'esempio sopra. Solleva `ValueError` se `child` non è collegato da nessun giunto nel modello (es. non è mai stato fuso, o il suo giunto è già stato rimosso).
 
+`child_orientation_deg`/`parent_orientation_deg` (Eulero X-Y-Z body-fixed, in gradi, default nessuna inclinazione) orientano il nuovo giunto sui due lati -- indispensabile per un tipo con un asse non simmetrico come `"slider"` (scorre lungo il proprio asse X locale): per vincolare un corpo a scorrere lungo una retta inclinata di `incline_deg` rispetto al piano del genitore,
+
+```python
+full.attach_component(
+    full.body("box"), to=full.model.getGround(),
+    parent_orientation_deg=(0.0, 0.0, incline_deg),
+    joint_type="slider",
+)
+```
+
 ## Costruire un modello da CAD (.step/.stp)
 
 `OpenSimModel.from_step` costruisce un modello direttamente da un assieme CAD in formato STEP. Per default (`as_one_object=True`) tutti i solidi del file vengono saldati in un unico corpo OpenSim, con massa/inerzia combinate; con `as_one_object=False` genera invece un corpo per ogni solido trovato nel file, come nelle versioni precedenti:

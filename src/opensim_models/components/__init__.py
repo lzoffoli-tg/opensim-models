@@ -426,7 +426,13 @@ class Muscle(_ComponentWrapper):
         Parameters
         ----------
         newtons : float
-            New maximum isometric force. Must be strictly positive.
+            New maximum isometric force, in newtons. Must be finite and
+            strictly positive.
+
+        Raises
+        ------
+        ValueError
+            If ``newtons`` is not finite or not strictly positive.
         """
         self._raw.setMaxIsometricForce(_positive(newtons))
 
@@ -441,7 +447,13 @@ class Muscle(_ComponentWrapper):
         Parameters
         ----------
         meters : float
-            New optimal fiber length. Must be strictly positive.
+            New optimal fiber length, in metres. Must be finite and
+            strictly positive.
+
+        Raises
+        ------
+        ValueError
+            If ``meters`` is not finite or not strictly positive.
         """
         self._raw.setOptimalFiberLength(_positive(meters))
 
@@ -456,7 +468,13 @@ class Muscle(_ComponentWrapper):
         Parameters
         ----------
         meters : float
-            New tendon slack length. Must be strictly positive.
+            New tendon slack length, in metres. Must be finite and
+            strictly positive.
+
+        Raises
+        ------
+        ValueError
+            If ``meters`` is not finite or not strictly positive.
         """
         self._raw.setTendonSlackLength(_positive(meters))
 
@@ -471,7 +489,15 @@ class Muscle(_ComponentWrapper):
         Parameters
         ----------
         degrees : float
-            New pennation angle. Must be finite and within ``[0, 90)``.
+            New pennation angle, in degrees. Must be finite and within
+            ``[0, 90)`` -- ``90`` itself is excluded since a pennation
+            angle that large would leave no fiber length component along
+            the line of action.
+
+        Raises
+        ------
+        ValueError
+            If ``degrees`` is not finite or not in ``[0, 90)``.
         """
         if not np.isfinite(degrees) or not (0.0 <= degrees < 90.0):
             raise ValueError(
@@ -506,9 +532,15 @@ class Joint(_ComponentWrapper):
 class Force(_ComponentWrapper):
     """Python-friendly wrapper around an ``opensim.Force``.
 
-    A muscle is a ``Force`` subtype in OpenSim; see :class:`Muscle` for
-    muscle-specific properties on top of this base set (``.name``,
-    ``.raw``).
+    A thin, intentionally minimal wrapper for now -- see the module
+    docstring for why (OpenSim has many concrete ``Force`` subtypes, each
+    with its own API). Provides only the base :class:`_ComponentWrapper`
+    surface: :attr:`~_ComponentWrapper.name`/:meth:`~_ComponentWrapper.set_name`,
+    equality/hashing by underlying identity, and :attr:`~_ComponentWrapper.raw`
+    as the escape hatch to the underlying ``opensim.Force`` object for
+    anything not wrapped here (e.g. force-specific getters/setters). A
+    muscle is a ``Force`` subtype in OpenSim; see :class:`Muscle` for
+    muscle-specific properties on top of this base set.
     """
 
 
@@ -516,7 +548,14 @@ class Constraint(_ComponentWrapper):
     """Python-friendly wrapper around an ``opensim.Constraint``.
 
     A thin, intentionally minimal wrapper for now -- see the module
-    docstring.
+    docstring for why (OpenSim has many concrete ``Constraint`` subtypes,
+    each with its own API). Provides only the base
+    :class:`_ComponentWrapper` surface:
+    :attr:`~_ComponentWrapper.name`/:meth:`~_ComponentWrapper.set_name`,
+    equality/hashing by underlying identity, and :attr:`~_ComponentWrapper.raw`
+    as the escape hatch to the underlying ``opensim.Constraint`` object for
+    anything not wrapped here (e.g. a ``CoordinateCouplerConstraint``'s own
+    function/coordinates).
     """
 
 
@@ -524,7 +563,13 @@ class Controller(_ComponentWrapper):
     """Python-friendly wrapper around an ``opensim.Controller``.
 
     A thin, intentionally minimal wrapper for now -- see the module
-    docstring.
+    docstring for why (OpenSim has many concrete ``Controller`` subtypes,
+    each with its own API). Provides only the base
+    :class:`_ComponentWrapper` surface:
+    :attr:`~_ComponentWrapper.name`/:meth:`~_ComponentWrapper.set_name`,
+    equality/hashing by underlying identity, and :attr:`~_ComponentWrapper.raw`
+    as the escape hatch to the underlying ``opensim.Controller`` object for
+    anything not wrapped here (e.g. which actuators it controls).
     """
 
 
@@ -532,7 +577,14 @@ class ContactGeometry(_ComponentWrapper):
     """Python-friendly wrapper around an ``opensim.ContactGeometry``.
 
     A thin, intentionally minimal wrapper for now -- see the module
-    docstring.
+    docstring for why (OpenSim has many concrete ``ContactGeometry``
+    subtypes, e.g. ``ContactSphere``/``ContactHalfSpace``/``ContactMesh``,
+    each with its own API). Provides only the base
+    :class:`_ComponentWrapper` surface:
+    :attr:`~_ComponentWrapper.name`/:meth:`~_ComponentWrapper.set_name`,
+    equality/hashing by underlying identity, and :attr:`~_ComponentWrapper.raw`
+    as the escape hatch to the underlying ``opensim.ContactGeometry``
+    object for anything not wrapped here (e.g. a sphere's radius).
     """
 
 
@@ -540,7 +592,12 @@ class Probe(_ComponentWrapper):
     """Python-friendly wrapper around an ``opensim.Probe``.
 
     A thin, intentionally minimal wrapper for now -- see the module
-    docstring.
+    docstring for why (OpenSim has many concrete ``Probe`` subtypes, each
+    with its own API). Provides only the base :class:`_ComponentWrapper`
+    surface: :attr:`~_ComponentWrapper.name`/:meth:`~_ComponentWrapper.set_name`,
+    equality/hashing by underlying identity, and :attr:`~_ComponentWrapper.raw`
+    as the escape hatch to the underlying ``opensim.Probe`` object for
+    anything not wrapped here (e.g. a probe's operation/report settings).
     """
 
 

@@ -117,7 +117,25 @@ class Box(Body):
         return self._width
 
     def set_width(self, width: float) -> None:
-        """Set the full extent along local X (metres) and rebuild the box, keeping its current pose."""
+        """Set the full extent along local X and rebuild the box, keeping its current pose.
+
+        Rebuilds the body, mesh and joint (new mesh written to
+        ``assets/meshes/box.stl``, inertia recomputed from the new
+        dimensions and the current :attr:`mass_kg`), re-reading
+        :attr:`origin`/:attr:`angle_deg` beforehand so the box's placement
+        is unchanged.
+
+        Parameters
+        ----------
+        width : float
+            New full extent along local X, in metres. Must be finite and
+            strictly positive.
+
+        Raises
+        ------
+        ValueError
+            If ``width`` is not finite or not strictly positive.
+        """
         self._width = _positive(width)
         self._rebuild(origin=self.origin, angle_deg=self.angle_deg)
 
@@ -127,7 +145,21 @@ class Box(Body):
         return self._height
 
     def set_height(self, height: float) -> None:
-        """Set the full extent along local Y (metres) and rebuild the box, keeping its current pose."""
+        """Set the full extent along local Y and rebuild the box, keeping its current pose.
+
+        Same rebuild as :meth:`set_width`, along the Y axis instead.
+
+        Parameters
+        ----------
+        height : float
+            New full extent along local Y, in metres. Must be finite and
+            strictly positive.
+
+        Raises
+        ------
+        ValueError
+            If ``height`` is not finite or not strictly positive.
+        """
         self._height = _positive(height)
         self._rebuild(origin=self.origin, angle_deg=self.angle_deg)
 
@@ -137,7 +169,21 @@ class Box(Body):
         return self._depth
 
     def set_depth(self, depth: float) -> None:
-        """Set the full extent along local Z (metres) and rebuild the box, keeping its current pose."""
+        """Set the full extent along local Z and rebuild the box, keeping its current pose.
+
+        Same rebuild as :meth:`set_width`, along the Z axis instead.
+
+        Parameters
+        ----------
+        depth : float
+            New full extent along local Z, in metres. Must be finite and
+            strictly positive.
+
+        Raises
+        ------
+        ValueError
+            If ``depth`` is not finite or not strictly positive.
+        """
         self._depth = _positive(depth)
         self._rebuild(origin=self.origin, angle_deg=self.angle_deg)
 
@@ -147,7 +193,25 @@ class Box(Body):
         return self._mass_kg
 
     def set_mass_kg(self, mass_kg: float) -> None:
-        """Set the mass (kg) and rebuild the box (inertia scales with it), keeping its current pose."""
+        """Set the mass and rebuild the box (inertia scales with it), keeping its current pose.
+
+        Unlike the generic :meth:`~opensim_models.components.Body.set_mass`
+        (which changes mass only, assuming the inertia tensor is kept
+        independently), this recomputes the analytical inertia tensor for
+        the new mass at the box's current dimensions, then rebuilds the
+        body/mesh/joint, re-reading :attr:`origin`/:attr:`angle_deg`
+        beforehand so the box's placement is unchanged.
+
+        Parameters
+        ----------
+        mass_kg : float
+            New mass, in kilograms. Must be finite and strictly positive.
+
+        Raises
+        ------
+        ValueError
+            If ``mass_kg`` is not finite or not strictly positive.
+        """
         self._mass_kg = _positive(mass_kg)
         self._rebuild(origin=self.origin, angle_deg=self.angle_deg)
 
@@ -164,7 +228,19 @@ class Box(Body):
         return self._mass_kg
 
     def set_mass(self, kilograms: float) -> None:
-        """Set the mass (kg); see :meth:`set_mass_kg` (same thing, inertia included)."""
+        """Set the mass; a direct alias for :meth:`set_mass_kg` (same thing, inertia included).
+
+        Parameters
+        ----------
+        kilograms : float
+            New mass, in kilograms. Must be finite and strictly positive;
+            see :meth:`set_mass_kg`.
+
+        Raises
+        ------
+        ValueError
+            If ``kilograms`` is not finite or not strictly positive.
+        """
         self.set_mass_kg(kilograms)
 
     @property
@@ -181,11 +257,20 @@ class Box(Body):
         return (position.get(0), position.get(1), position.get(2))
 
     def set_origin(self, origin: tuple[float, float, float]) -> None:
-        """Set the box's centre in the ground frame (metres), keeping its current orientation.
+        """Set the box's centre in the ground frame, keeping its current orientation.
 
         Rebuilds the body/mesh/joint, same as a dimension setter (see
-        :meth:`set_width`); prefer :meth:`translate` for a relative shift
-        instead of an absolute position.
+        :meth:`set_width`), re-reading :attr:`angle_deg` beforehand so the
+        box's orientation is unchanged; prefer :meth:`translate` for a
+        relative shift instead of an absolute position. Unlike the
+        dimension/mass setters, this does not validate ``origin`` (no
+        finiteness check) before passing it through to the new
+        ``WeldJoint``.
+
+        Parameters
+        ----------
+        origin : tuple[float, float, float]
+            New box centre ``(x, y, z)`` in the ground frame, in metres.
         """
         self._rebuild(origin=origin, angle_deg=self.angle_deg)
 
@@ -205,11 +290,21 @@ class Box(Body):
         return tuple(float(np.degrees(euler.get(i))) for i in range(3))
 
     def set_angle_deg(self, angle_deg: tuple[float, float, float]) -> None:
-        """Set the box's orientation (X-Y-Z body-fixed Euler degrees), keeping its current centre.
+        """Set the box's orientation, keeping its current centre.
 
         Rebuilds the body/mesh/joint, same as a dimension setter (see
-        :meth:`set_width`); prefer :meth:`rotate` for a relative rotation
-        (e.g. about :attr:`com`) instead of an absolute orientation.
+        :meth:`set_width`), re-reading :attr:`origin` beforehand so the
+        box's centre is unchanged; prefer :meth:`rotate` for a relative
+        rotation (e.g. about :attr:`com`) instead of an absolute
+        orientation. Unlike the dimension/mass setters, this does not
+        validate ``angle_deg`` (no finiteness check) before converting it
+        to radians and passing it through to the new ``WeldJoint``.
+
+        Parameters
+        ----------
+        angle_deg : tuple[float, float, float]
+            New box orientation relative to ground, as X-Y-Z body-fixed
+            Euler angles in degrees about ground's own axes.
         """
         self._rebuild(origin=self.origin, angle_deg=angle_deg)
 
@@ -259,12 +354,43 @@ class Box(Body):
         """Rotate this box by ``angle_deg`` about the axis through ``origin`` along ``direction``.
 
         Thin wrapper around :func:`~opensim_models.operators.rotate_object`
-        applied to this box's own private container; see that function for
-        the full parameter/return documentation. ``inplace=True`` (the
-        default) mutates this box and returns its new ground-frame
-        position; ``inplace=False`` leaves it untouched and returns a
-        standalone ``OpenSimModel`` holding a rotated copy instead (not
-        another ``Box``, since the rotation is generic to any container).
+        applied to this box's own private container (always the whole-model
+        case of that function, since ``self._container`` holds nothing but
+        this one box); see that function for the full parameter/return
+        documentation, including every accepted ``origin`` form and the
+        exact conditions under which it raises.
+
+        Parameters
+        ----------
+        origin : tuple[float, float, float], opensim.Marker, opensim.Joint, or opensim.Frame
+            Pivot point for the rotation, in the ground frame, in metres
+            (when given as a plain coordinate). :attr:`com` is a common
+            choice, to spin the box about its own centre.
+        direction : tuple[float, float, float]
+            Direction of the rotation axis through ``origin``, in the
+            ground frame. Need not be a unit vector; must not be the zero
+            vector.
+        angle_deg : float
+            Rotation angle, in degrees.
+        inplace : bool, optional
+            Defaults to ``True``: mutates this box and returns its new
+            ground-frame position (a ``tuple[float, float, float]``, in
+            metres). When ``False``, this box is left untouched and a
+            standalone, independent ``OpenSimModel`` holding a rotated
+            copy is returned instead (not another ``Box``, since the
+            rotation is generic to any container).
+
+        Returns
+        -------
+        tuple[float, float, float] or OpenSimModel
+            This box's new ground-frame position (``inplace=True``), or a
+            rotated-copy ``OpenSimModel`` (``inplace=False``).
+
+        Raises
+        ------
+        ValueError
+            If ``direction`` is a zero vector, or ``origin`` is a
+            coordinate without exactly 3 values.
         """
         return rotate_object(self._container, origin, direction, angle_deg, inplace=inplace)
 
@@ -273,17 +399,41 @@ class Box(Body):
 
         Thin wrapper around
         :func:`~opensim_models.operators.translate_object` applied to this
-        box's own private container; see that function for the full
-        parameter/return documentation. ``inplace=True`` (the default)
-        mutates this box and returns its new ground-frame position;
-        ``inplace=False`` leaves it untouched and returns a standalone
-        ``OpenSimModel`` holding a translated copy instead (not another
-        ``Box``, since the translation is generic to any container).
+        box's own private container (always the whole-model case of that
+        function); see that function for the full parameter/return
+        documentation.
+
+        Parameters
+        ----------
+        direction : tuple[float, float, float]
+            Displacement ``(dx, dy, dz)``, in the ground frame, in metres.
+        inplace : bool, optional
+            Defaults to ``True``: mutates this box and returns its new
+            ground-frame position (a ``tuple[float, float, float]``, in
+            metres). When ``False``, this box is left untouched and a
+            standalone, independent ``OpenSimModel`` holding a translated
+            copy is returned instead (not another ``Box``, since the
+            translation is generic to any container).
+
+        Returns
+        -------
+        tuple[float, float, float] or OpenSimModel
+            This box's new ground-frame position (``inplace=True``), or a
+            translated-copy ``OpenSimModel`` (``inplace=False``).
         """
         return translate_object(self._container, direction, inplace=inplace)
 
     def copy(self) -> "Box":
-        """Return a new, independent ``Box`` with the same dimensions, mass and pose."""
+        """Return a new, independent ``Box`` with the same dimensions, mass and pose.
+
+        Returns
+        -------
+        Box
+            A fresh ``Box`` built from this one's current
+            ``width``/``height``/``depth``/``mass_kg``/``origin``/``angle_deg``
+            -- its own private container, entirely independent of this
+            box's.
+        """
         return Box(
             self._width,
             self._height,

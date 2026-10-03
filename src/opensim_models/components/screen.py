@@ -183,7 +183,26 @@ class Screen(Body):
         return self._width_mm
 
     def set_width_mm(self, width_mm: float | None) -> None:
-        """Set the explicit panel width in millimetres and rebuild the panel."""
+        """Set the explicit panel width in millimetres and rebuild the panel.
+
+        The new size only takes effect once :attr:`height_mm` is also set
+        (see :meth:`_resolve_size_mm`'s priority, described in the class
+        docstring); until then the panel stays sized from
+        :attr:`inches`/:attr:`ratio`.
+
+        Parameters
+        ----------
+        width_mm : float or None
+            New explicit panel width, in millimetres. ``None`` reverts to
+            sizing from :attr:`inches`/:attr:`ratio`.
+
+        Raises
+        ------
+        ValueError
+            If, after this change, the panel cannot be sized at all --
+            i.e. ``width_mm``/:attr:`height_mm` are not both set, and
+            :attr:`inches`/:attr:`ratio` are not both set either.
+        """
         self._width_mm = width_mm
         self._rebuild()
 
@@ -193,7 +212,25 @@ class Screen(Body):
         return self._height_mm
 
     def set_height_mm(self, height_mm: float | None) -> None:
-        """Set the explicit panel height in millimetres and rebuild the panel."""
+        """Set the explicit panel height in millimetres and rebuild the panel.
+
+        The new size only takes effect once :attr:`width_mm` is also set
+        (see :meth:`set_width_mm`); until then the panel stays sized from
+        :attr:`inches`/:attr:`ratio`.
+
+        Parameters
+        ----------
+        height_mm : float or None
+            New explicit panel height, in millimetres. ``None`` reverts to
+            sizing from :attr:`inches`/:attr:`ratio`.
+
+        Raises
+        ------
+        ValueError
+            If, after this change, the panel cannot be sized at all --
+            i.e. :attr:`width_mm`/``height_mm`` are not both set, and
+            :attr:`inches`/:attr:`ratio` are not both set either.
+        """
         self._height_mm = height_mm
         self._rebuild()
 
@@ -203,17 +240,64 @@ class Screen(Body):
         return self._inches
 
     def set_inches(self, inches: float | None) -> None:
-        """Set the diagonal size in inches and rebuild the panel."""
+        """Set the diagonal size in inches and rebuild the panel.
+
+        Only used when :attr:`width_mm`/:attr:`height_mm` are not both
+        set (see the class docstring's sizing priority).
+
+        Parameters
+        ----------
+        inches : float or None
+            New diagonal size, in inches. ``None`` makes the diagonal
+            sizing unusable, which is only a problem if
+            :attr:`width_mm`/:attr:`height_mm` are not both set either
+            (see ``Raises``).
+
+        Raises
+        ------
+        ValueError
+            If, after this change, the panel cannot be sized at all --
+            i.e. :attr:`width_mm`/:attr:`height_mm` are not both set, and
+            ``inches``/:attr:`ratio` are not both set either.
+        """
         self._inches = inches
         self._rebuild()
 
     @property
     def ratio(self) -> str | None:
-        """Aspect ratio ``"width:height"`` (only used when ``width_mm``/``height_mm`` are ``None``)."""
+        """Aspect ratio ``"width:height"``, or ``None``.
+
+        Only used when :attr:`width_mm`/:attr:`height_mm` are not both
+        set.
+        """
         return self._ratio
 
     def set_ratio(self, ratio: str | None) -> None:
-        """Set the aspect ratio (``"width:height"``, e.g. ``"16:9"``) and rebuild the panel."""
+        """Set the aspect ratio and rebuild the panel.
+
+        Only used when :attr:`width_mm`/:attr:`height_mm` are not both
+        set (see the class docstring's sizing priority).
+
+        Parameters
+        ----------
+        ratio : str or None
+            New aspect ratio as ``"width:height"`` (e.g. ``"16:9"``), both
+            sides strictly positive numbers. ``None`` makes the diagonal
+            sizing unusable, which is only a problem if
+            :attr:`width_mm`/:attr:`height_mm` are not both set either
+            (see ``Raises``).
+
+        Raises
+        ------
+        ValueError
+            If ``ratio`` is used (i.e. :attr:`width_mm`/:attr:`height_mm`
+            are not both set) and is not a valid ``"width:height"``
+            string (wrong number of parts, non-numeric parts, or either
+            side not strictly positive); or if, after this change, the
+            panel cannot be sized at all -- i.e.
+            :attr:`width_mm`/:attr:`height_mm` are not both set, and
+            :attr:`inches`/``ratio`` are not both set either.
+        """
         self._ratio = ratio
         self._rebuild()
 
@@ -223,7 +307,16 @@ class Screen(Body):
         return self._center_x
 
     def set_center_x(self, center_x: float) -> None:
-        """Set the panel centre X coordinate in ground (metres) and rebuild the panel."""
+        """Set the panel centre X coordinate in ground and rebuild the panel.
+
+        Not validated (no finiteness check) before being passed through to
+        the new ``WeldJoint``.
+
+        Parameters
+        ----------
+        center_x : float
+            New panel centre X coordinate in the ground frame, in metres.
+        """
         self._center_x = center_x
         self._rebuild()
 
@@ -233,7 +326,16 @@ class Screen(Body):
         return self._center_y
 
     def set_center_y(self, center_y: float) -> None:
-        """Set the panel centre Y coordinate in ground (metres) and rebuild the panel."""
+        """Set the panel centre Y coordinate in ground and rebuild the panel.
+
+        Not validated (no finiteness check) before being passed through to
+        the new ``WeldJoint``.
+
+        Parameters
+        ----------
+        center_y : float
+            New panel centre Y coordinate in the ground frame, in metres.
+        """
         self._center_y = center_y
         self._rebuild()
 
@@ -243,7 +345,16 @@ class Screen(Body):
         return self._center_z
 
     def set_center_z(self, center_z: float) -> None:
-        """Set the panel centre Z coordinate in ground (metres) and rebuild the panel."""
+        """Set the panel centre Z coordinate in ground and rebuild the panel.
+
+        Not validated (no finiteness check) before being passed through to
+        the new ``WeldJoint``.
+
+        Parameters
+        ----------
+        center_z : float
+            New panel centre Z coordinate in the ground frame, in metres.
+        """
         self._center_z = center_z
         self._rebuild()
 
@@ -253,7 +364,20 @@ class Screen(Body):
         return self._angle_deg
 
     def set_angle_deg(self, angle_deg: float) -> None:
-        """Set the panel inclination relative to the ground (degrees) and rebuild the panel."""
+        """Set the panel inclination relative to the ground and rebuild the panel.
+
+        Internally this is converted to a rotation of ``angle_deg - 90``
+        degrees about ground's X axis for the new ``WeldJoint`` (so ``0``
+        tilts the panel flat and ``90`` applies no extra tilt, leaving it
+        upright); not validated (no finiteness check) before that
+        conversion.
+
+        Parameters
+        ----------
+        angle_deg : float
+            New panel inclination relative to the ground, in degrees:
+            ``0`` lies flat, ``90`` stands upright.
+        """
         self._angle_deg = angle_deg
         self._rebuild()
 
@@ -267,13 +391,44 @@ class Screen(Body):
         """Rotate this panel by ``angle_deg`` about the axis through ``origin`` along ``direction``.
 
         Thin wrapper around :func:`~opensim_models.operators.rotate_object`
-        applied to this panel's own private container; see that function
-        for the full parameter/return documentation. ``inplace=True`` (the
-        default) mutates this panel and returns its new ground-frame
-        position; ``inplace=False`` leaves it untouched and returns a
-        standalone ``OpenSimModel`` holding a rotated copy instead (not
-        another ``Screen``, since the rotation is generic to any
-        container).
+        applied to this panel's own private container (always the
+        whole-model case of that function, since ``self._container`` holds
+        nothing but this one panel); see that function for the full
+        parameter/return documentation, including every accepted
+        ``origin`` form and the exact conditions under which it raises.
+
+        Parameters
+        ----------
+        origin : tuple[float, float, float], opensim.Marker, opensim.Joint, or opensim.Frame
+            Pivot point for the rotation, in the ground frame, in metres
+            (when given as a plain coordinate). :attr:`~opensim_models.components.Body.com`
+            (inherited) is a common choice, to spin the panel about its
+            own centre.
+        direction : tuple[float, float, float]
+            Direction of the rotation axis through ``origin``, in the
+            ground frame. Need not be a unit vector; must not be the zero
+            vector.
+        angle_deg : float
+            Rotation angle, in degrees.
+        inplace : bool, optional
+            Defaults to ``True``: mutates this panel and returns its new
+            ground-frame position (a ``tuple[float, float, float]``, in
+            metres). When ``False``, this panel is left untouched and a
+            standalone, independent ``OpenSimModel`` holding a rotated
+            copy is returned instead (not another ``Screen``, since the
+            rotation is generic to any container).
+
+        Returns
+        -------
+        tuple[float, float, float] or OpenSimModel
+            This panel's new ground-frame position (``inplace=True``), or
+            a rotated-copy ``OpenSimModel`` (``inplace=False``).
+
+        Raises
+        ------
+        ValueError
+            If ``direction`` is a zero vector, or ``origin`` is a
+            coordinate without exactly 3 values.
         """
         return rotate_object(self._container, origin, direction, angle_deg, inplace=inplace)
 
@@ -282,17 +437,41 @@ class Screen(Body):
 
         Thin wrapper around
         :func:`~opensim_models.operators.translate_object` applied to this
-        panel's own private container; see that function for the full
-        parameter/return documentation. ``inplace=True`` (the default)
-        mutates this panel and returns its new ground-frame position;
-        ``inplace=False`` leaves it untouched and returns a standalone
-        ``OpenSimModel`` holding a translated copy instead (not another
-        ``Screen``, since the translation is generic to any container).
+        panel's own private container (always the whole-model case of that
+        function); see that function for the full parameter/return
+        documentation.
+
+        Parameters
+        ----------
+        direction : tuple[float, float, float]
+            Displacement ``(dx, dy, dz)``, in the ground frame, in metres.
+        inplace : bool, optional
+            Defaults to ``True``: mutates this panel and returns its new
+            ground-frame position (a ``tuple[float, float, float]``, in
+            metres). When ``False``, this panel is left untouched and a
+            standalone, independent ``OpenSimModel`` holding a translated
+            copy is returned instead (not another ``Screen``, since the
+            translation is generic to any container).
+
+        Returns
+        -------
+        tuple[float, float, float] or OpenSimModel
+            This panel's new ground-frame position (``inplace=True``), or
+            a translated-copy ``OpenSimModel`` (``inplace=False``).
         """
         return translate_object(self._container, direction, inplace=inplace)
 
     def copy(self) -> "Screen":
-        """Return a new, independent ``Screen`` with the same size, pose and sizing mode."""
+        """Return a new, independent ``Screen`` with the same size, pose and sizing mode.
+
+        Returns
+        -------
+        Screen
+            A fresh ``Screen`` built from this one's current
+            ``width_mm``/``height_mm``/``inches``/``ratio``/``center_x``/
+            ``center_y``/``center_z``/``angle_deg`` -- its own private
+            container, entirely independent of this panel's.
+        """
         return Screen(
             width_mm=self._width_mm,
             height_mm=self._height_mm,

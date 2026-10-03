@@ -155,9 +155,42 @@ class OpenSimModel:
     Parameters
     ----------
     model_path : str, pathlib.Path or None, optional
-        Path to an OpenSim ``.osim`` model file. When ``None``, an empty
-        in-memory model is created instead (used internally to build the
-        result of :meth:`__add__`).
+        Path to an OpenSim ``.osim`` model file. When ``None`` (default),
+        an empty in-memory model is created instead (used internally to
+        build the result of :meth:`__add__`/:meth:`add_model`, and
+        available directly for building a model up from scratch with
+        :meth:`add_body`/:meth:`add_free_joint`/etc.).
+
+    Attributes
+    ----------
+    model : opensim.Model
+        The wrapped native OpenSim model. The escape hatch to OpenSim's
+        full native API for anything this wrapper doesn't (yet) cover
+        with its own property/method.
+    state : opensim.State
+        The current simulation state: posture, velocities, and whichever
+        derived quantities have been realized so far (see
+        :meth:`update_state`). Reading a derived quantity before it has
+        been realized raises a native, catchable error; reading *any*
+        quantity after a structural change (adding/removing a component)
+        without going through :meth:`reinitialize`/:meth:`structural_change`
+        first crashes the process instead. Replaced wholesale (a new
+        ``opensim.State`` object) by :meth:`reinitialize`,
+        :meth:`structural_change`, :meth:`scale_bodies`, :meth:`add_model`,
+        :meth:`remove_model` and :meth:`show`.
+    opensim : module
+        The imported ``opensim`` Python bindings module (see
+        :func:`import_opensim`), stored per instance so every
+        ``opensim.<Class>(...)`` construction elsewhere in this package
+        (and in caller code) uses the exact bindings this model was built
+        from.
+    model_path : pathlib.Path or None
+        Path this model was loaded from, or ``None`` if it was created
+        empty (``model_path=None``, or as the result of
+        :meth:`__add__`/:meth:`__radd__`/:meth:`add_model`/:meth:`copy`
+        starting from an empty model). Not updated by :meth:`export`: it
+        always reflects where the model was *loaded* from, not the most
+        recent save destination.
 
     Raises
     ------
@@ -179,7 +212,31 @@ class OpenSimModel:
     )
 
     def __init__(self, model_path: str | Path | None = None) -> None:
-        """Load or create the model, unlock its coordinates, and initialize its state."""
+        """Load (or create) the model, unlock its coordinates, and initialize its state.
+
+        Every coordinate the loaded model locks by default (e.g. subtalar,
+        MTP or wrist coordinates in a gait-oriented base model) is unlocked
+        here (see :meth:`_unlock_coordinates`), so any subclass can freely
+        drive the full coordinate set -- those locks are not backed by
+        constraints, so removing them is safe.
+
+        Parameters
+        ----------
+        model_path : str, pathlib.Path or None, optional
+            Path to an existing OpenSim ``.osim`` model file to load. When
+            ``None`` (default), an empty in-memory ``opensim.Model`` is
+            created instead, ready for :meth:`add_body`/:meth:`add_free_joint`/
+            etc. to build up from scratch.
+
+        Raises
+        ------
+        FileNotFoundError
+            If ``model_path`` is given but does not point to an existing
+            file.
+        RuntimeError
+            If the native OpenSim Python bindings cannot be imported (see
+            :func:`import_opensim`).
+        """
         self.opensim = import_opensim()
         if model_path is None:
             self.model_path = None
@@ -421,7 +478,17 @@ class OpenSimModel:
 
     @property
     def bodies(self) -> dict[str, "components.Body"]:
-        """Return every body in the model, keyed by name."""
+        """Return every body currently in the model.
+
+        Returns
+        -------
+        dict[str, components.Body]
+            Maps each body's OpenSim name to a
+            :class:`~opensim_models.components.Body` wrapping it. Rebuilt
+            fresh on every access (not cached), so it always reflects the
+            model's current component tree; empty if the model has no
+            bodies.
+        """
         from . import components
 
         return {
@@ -431,7 +498,17 @@ class OpenSimModel:
 
     @property
     def joints(self) -> dict[str, "components.Joint"]:
-        """Return every joint in the model, keyed by name."""
+        """Return every joint currently in the model.
+
+        Returns
+        -------
+        dict[str, components.Joint]
+            Maps each joint's OpenSim name to a
+            :class:`~opensim_models.components.Joint` wrapping it (of any
+            joint type -- ``FreeJoint``, ``PinJoint``, ``WeldJoint``, ...).
+            Rebuilt fresh on every access; empty if the model has no
+            joints.
+        """
         from . import components
 
         return {
@@ -441,7 +518,17 @@ class OpenSimModel:
 
     @property
     def muscles(self) -> dict[str, "components.Muscle"]:
-        """Return every muscle in the model, keyed by name."""
+        """Return every muscle currently in the model.
+
+        Returns
+        -------
+        dict[str, components.Muscle]
+            Maps each muscle's OpenSim name to a
+            :class:`~opensim_models.components.Muscle` wrapping it. Unlike
+            :attr:`forces`, this excludes non-muscle forces/actuators (e.g.
+            a ``CoordinateActuator``). Rebuilt fresh on every access; empty
+            if the model has no muscles.
+        """
         from . import components
 
         return {
@@ -451,7 +538,15 @@ class OpenSimModel:
 
     @property
     def markers(self) -> dict[str, "components.Marker"]:
-        """Return every marker in the model, keyed by name."""
+        """Return every marker currently in the model.
+
+        Returns
+        -------
+        dict[str, components.Marker]
+            Maps each marker's OpenSim name to a
+            :class:`~opensim_models.components.Marker` wrapping it. Rebuilt
+            fresh on every access; empty if the model has no markers.
+        """
         from . import components
 
         return {
@@ -461,7 +556,22 @@ class OpenSimModel:
 
     @property
     def coordinates(self) -> dict[str, "components.Coordinate"]:
-        """Return every coordinate in the model, keyed by name."""
+        """Return every coordinate currently in the model.
+
+        Includes every coordinate owned by every joint, locked or not
+        (locks are not reflected here -- see
+        :class:`~opensim_models.components.Coordinate`'s own ``locked``
+        property), and any coordinate driven by a
+        :class:`opensim.CoordinateCouplerConstraint`.
+
+        Returns
+        -------
+        dict[str, components.Coordinate]
+            Maps each coordinate's OpenSim name to a
+            :class:`~opensim_models.components.Coordinate` wrapping it.
+            Rebuilt fresh on every access; empty if the model has no
+            coordinates.
+        """
         from . import components
 
         return {
@@ -471,7 +581,19 @@ class OpenSimModel:
 
     @property
     def forces(self) -> dict[str, "components.Force"]:
-        """Return every force in the model (including muscles), keyed by name."""
+        """Return every force/actuator currently in the model, including muscles.
+
+        A muscle is itself a ``Force`` subtype in OpenSim (there is no
+        separate muscle set at the native level) -- see :attr:`muscles` to
+        get only the muscles.
+
+        Returns
+        -------
+        dict[str, components.Force]
+            Maps each force's OpenSim name to a
+            :class:`~opensim_models.components.Force` wrapping it. Rebuilt
+            fresh on every access; empty if the model has no forces.
+        """
         from . import components
 
         return {
@@ -481,7 +603,17 @@ class OpenSimModel:
 
     @property
     def constraints(self) -> dict[str, "components.Constraint"]:
-        """Return every constraint in the model, keyed by name."""
+        """Return every constraint currently in the model.
+
+        Returns
+        -------
+        dict[str, components.Constraint]
+            Maps each constraint's OpenSim name to a
+            :class:`~opensim_models.components.Constraint` wrapping it (of
+            any constraint type -- ``WeldConstraint``, ``PointConstraint``,
+            ``CoordinateCouplerConstraint``, ...). Rebuilt fresh on every
+            access; empty if the model has no constraints.
+        """
         from . import components
 
         return {
@@ -491,7 +623,16 @@ class OpenSimModel:
 
     @property
     def controllers(self) -> dict[str, "components.Controller"]:
-        """Return every controller in the model, keyed by name."""
+        """Return every controller currently in the model.
+
+        Returns
+        -------
+        dict[str, components.Controller]
+            Maps each controller's OpenSim name to a
+            :class:`~opensim_models.components.Controller` wrapping it.
+            Rebuilt fresh on every access; empty if the model has no
+            controllers.
+        """
         from . import components
 
         return {
@@ -501,7 +642,16 @@ class OpenSimModel:
 
     @property
     def contact_geometries(self) -> dict[str, "components.ContactGeometry"]:
-        """Return every contact geometry in the model, keyed by name."""
+        """Return every contact geometry currently in the model.
+
+        Returns
+        -------
+        dict[str, components.ContactGeometry]
+            Maps each contact geometry's OpenSim name to a
+            :class:`~opensim_models.components.ContactGeometry` wrapping it
+            (e.g. an ``opensim.ContactSphere``). Rebuilt fresh on every
+            access; empty if the model has no contact geometry.
+        """
         from . import components
 
         return {
@@ -511,7 +661,15 @@ class OpenSimModel:
 
     @property
     def probes(self) -> dict[str, "components.Probe"]:
-        """Return every probe in the model, keyed by name."""
+        """Return every probe currently in the model.
+
+        Returns
+        -------
+        dict[str, components.Probe]
+            Maps each probe's OpenSim name to a
+            :class:`~opensim_models.components.Probe` wrapping it. Rebuilt
+            fresh on every access; empty if the model has no probes.
+        """
         from . import components
 
         return {
@@ -520,60 +678,131 @@ class OpenSimModel:
         }
 
     def body(self, name: str) -> "components.Body":
-        """Return a body by its OpenSim name, wrapped as a :class:`~opensim_models.components.Body`.
+        """Look up a single body by its exact OpenSim name.
 
         Parameters
         ----------
         name : str
-            OpenSim body name.
+            Exact (case-sensitive) OpenSim name of the body to look up.
+
+        Returns
+        -------
+        components.Body
+            A :class:`~opensim_models.components.Body` wrapping the body
+            named ``name``.
+
+        Raises
+        ------
+        RuntimeError
+            If no body named ``name`` exists in the model. This surfaces
+            unchanged from OpenSim's own ``BodySet.get()`` call (a native
+            ``std::exception`` crossing into Python as a ``RuntimeError``),
+            not a friendlier Python exception.
         """
         from . import components
 
         return components.Body(self, self.model.getBodySet().get(name))
 
     def joint(self, name: str) -> "components.Joint":
-        """Return a joint by its OpenSim name, wrapped as a :class:`~opensim_models.components.Joint`.
+        """Look up a single joint by its exact OpenSim name.
 
         Parameters
         ----------
         name : str
-            OpenSim joint name.
+            Exact (case-sensitive) OpenSim name of the joint to look up.
+
+        Returns
+        -------
+        components.Joint
+            A :class:`~opensim_models.components.Joint` wrapping the joint
+            named ``name`` (of any joint type).
+
+        Raises
+        ------
+        RuntimeError
+            If no joint named ``name`` exists in the model -- see
+            :meth:`body` for why this is a ``RuntimeError`` rather than a
+            ``KeyError``/``ValueError``.
         """
         from . import components
 
         return components.Joint(self, self.model.getJointSet().get(name))
 
     def muscle(self, name: str) -> "components.Muscle":
-        """Return a muscle by its OpenSim name, wrapped as a :class:`~opensim_models.components.Muscle`.
+        """Look up a single muscle by its exact OpenSim name.
 
         Parameters
         ----------
         name : str
-            OpenSim muscle name.
+            Exact (case-sensitive) OpenSim name of the muscle to look up.
+            Only muscles are searched (see :attr:`muscles`); a non-muscle
+            force/actuator of the same name is not found here even though
+            it exists in the same underlying ``ForceSet`` -- use
+            :attr:`forces` for that.
+
+        Returns
+        -------
+        components.Muscle
+            A :class:`~opensim_models.components.Muscle` wrapping the
+            muscle named ``name``.
+
+        Raises
+        ------
+        RuntimeError
+            If no muscle named ``name`` exists in the model -- see
+            :meth:`body` for why this is a ``RuntimeError`` rather than a
+            ``KeyError``/``ValueError``.
         """
         from . import components
 
         return components.Muscle(self, self.model.getMuscles().get(name))
 
     def marker(self, name: str) -> "components.Marker":
-        """Return a marker by its OpenSim name, wrapped as a :class:`~opensim_models.components.Marker`.
+        """Look up a single marker by its exact OpenSim name.
 
         Parameters
         ----------
         name : str
-            OpenSim marker name.
+            Exact (case-sensitive) OpenSim name of the marker to look up.
+
+        Returns
+        -------
+        components.Marker
+            A :class:`~opensim_models.components.Marker` wrapping the
+            marker named ``name``.
+
+        Raises
+        ------
+        RuntimeError
+            If no marker named ``name`` exists in the model -- see
+            :meth:`body` for why this is a ``RuntimeError`` rather than a
+            ``KeyError``/``ValueError``.
         """
         from . import components
 
         return components.Marker(self, self.model.getMarkerSet().get(name))
 
     def coordinate(self, name: str) -> "components.Coordinate":
-        """Return a coordinate by its OpenSim name, wrapped as a :class:`~opensim_models.components.Coordinate`.
+        """Look up a single coordinate by its exact OpenSim name.
 
         Parameters
         ----------
         name : str
-            OpenSim coordinate name.
+            Exact (case-sensitive) OpenSim name of the coordinate to look
+            up (e.g. ``"knee_angle_r"``).
+
+        Returns
+        -------
+        components.Coordinate
+            A :class:`~opensim_models.components.Coordinate` wrapping the
+            coordinate named ``name``.
+
+        Raises
+        ------
+        RuntimeError
+            If no coordinate named ``name`` exists in the model -- see
+            :meth:`body` for why this is a ``RuntimeError`` rather than a
+            ``KeyError``/``ValueError``.
         """
         from . import components
 
@@ -745,6 +974,19 @@ class OpenSimModel:
             The new ground-frame position of this model's ground-attached
             joint (or a tuple of them, if it has more than one), when
             ``inplace=True``; otherwise the rotated copy of this model.
+
+        Raises
+        ------
+        TypeError
+            If ``origin`` cannot be resolved to a ground-frame position
+            (it must be an ``(x, y, z)`` coordinate, an ``opensim.Marker``,
+            ``opensim.Joint`` or ``opensim.Frame`` belonging to this
+            model), or if this model has a joint attached directly to
+            ground with no offset frame to rotate.
+        ValueError
+            If ``direction`` is a zero vector, ``origin`` is a coordinate
+            without exactly 3 values, or this model has no joint attached
+            to ground at all.
         """
         from .operators import rotate_object
 
@@ -778,23 +1020,47 @@ class OpenSimModel:
             The new ground-frame position of this model's ground-attached
             joint (or a tuple of them, if it has more than one), when
             ``inplace=True``; otherwise the translated copy of this model.
+
+        Raises
+        ------
+        TypeError
+            If this model has a joint attached directly to ground with no
+            offset frame to move.
+        ValueError
+            If ``direction`` does not have exactly 3 values, or this model
+            has no joint attached to ground at all.
         """
         from .operators import translate_object
 
         return translate_object(self, direction, inplace=inplace)
 
     def scale_bodies(self, factors: dict[str, tuple[float, float, float]]) -> None:
-        """Scale the complete model through OpenSim's native ScaleSet pipeline.
+        """Scale one or more bodies through OpenSim's native ScaleSet pipeline.
+
+        For each body, OpenSim scales its geometry, mass and inertia, and
+        every attachment point referencing it (joints, muscle path points,
+        markers, ...), consistently with the applied factors -- this is
+        OpenSim's own ``Model.scale()``, not a naive geometry-only resize.
+        After scaling, this preserves the current posture/velocity the same
+        way :meth:`reinitialize` does (coordinate defaults, including any
+        coupled coordinate, are synced from the current state) before the
+        system is rebuilt.
 
         Parameters
         ----------
         factors : dict[str, tuple[float, float, float]]
-            Body names mapped to positive ``(x, y, z)`` scale factors.
+            Maps body names to the ``(x, y, z)`` scale factors to apply to
+            each, unitless multipliers along that body's own local axes
+            (``1.0`` leaves that axis unchanged). A name not found in the
+            model is silently skipped rather than raising. Bodies not
+            listed are left unscaled.
 
         Raises
         ------
         ValueError
-            If a scale factor is non-finite or not strictly positive.
+            If any scale factor in ``factors`` is non-finite or not
+            strictly positive (checked only for body names that do exist
+            in the model).
         """
         body_set = self.model.getBodySet()
         scale_set = self.opensim.ScaleSet()
@@ -840,7 +1106,17 @@ class OpenSimModel:
         Returns
         -------
         pathlib.Path
-            Path to the written file.
+            ``model_path``, as a :class:`pathlib.Path` -- the path the
+            ``.osim`` file was actually written to.
+
+        Raises
+        ------
+        RuntimeError
+            If the file cannot be written (e.g. ``model_path``'s parent
+            directory does not exist, or the path is not writable). This
+            surfaces unchanged from OpenSim's own ``printToXML()`` call (a
+            native ``std::exception`` crossing into Python as a
+            ``RuntimeError``), not a friendlier Python exception.
         """
         self._sync_coordinate_defaults()
         destination = Path(model_path)
@@ -897,18 +1173,55 @@ class OpenSimModel:
         ----------
         directory : str or pathlib.Path
             Directory containing VTP/STL/OBJ (or other) geometry files.
+            Resolved to an absolute path before registering; not required
+            to exist yet at call time (not checked here), but a ``Mesh``
+            file that can't later be found in it will fail to resolve when
+            that mesh's properties are finalized.
+
+        Returns
+        -------
+        None
+            Registers ``directory`` as a side effect; nothing is returned.
         """
         _register_geometry_search_path(self.opensim, directory)
         self._geometry_dirs.append(Path(directory))
 
     @property
     def geometry_directories(self) -> tuple[Path, ...]:
-        """Return the directories registered for mesh geometry search."""
+        """Return every directory registered for mesh geometry search.
+
+        Returns
+        -------
+        tuple[pathlib.Path, ...]
+            Every directory passed to :meth:`add_geometry_directory` so
+            far (directly, or via ``geometry_path=`` on :meth:`show`), in
+            the order they were registered. Empty if none has been
+            registered yet. May contain duplicates if the same directory
+            was registered more than once.
+        """
         return tuple(self._geometry_dirs)
 
     @property
     def visualizer(self) -> Any | None:
-        """Return the native OpenSim visualizer after :meth:`show` starts it."""
+        """Return this instance's own VTK-based 3D visualizer, once :meth:`show` has started it.
+
+        This is this package's own :class:`~opensim_models._vtk_visualizer.VTKVisualizer`
+        (not OpenSim's native Simbody visualizer -- see :meth:`show` for why
+        this package renders its own 3D view instead). It is constructed on
+        a background thread shortly after :meth:`show` starts, so it may
+        still briefly be ``None`` immediately after :meth:`show` returns.
+        Stays set (not reset to ``None``) after the user closes the window;
+        a later :meth:`show` call resets it to ``None`` before constructing
+        a fresh one.
+
+        Returns
+        -------
+        Any or None
+            The live :class:`~opensim_models._vtk_visualizer.VTKVisualizer`
+            instance, or ``None`` if :meth:`show` has never been called (or
+            was just called and the background thread hasn't constructed it
+            yet).
+        """
         return self._visualizer
 
     def show(
@@ -1053,6 +1366,13 @@ class OpenSimModel:
             Prefix used to disambiguate colliding component names. Defaults
             to ``other``'s class name, lowercased.
 
+        Returns
+        -------
+        None
+            Merges ``other``'s components into ``self`` in place; nothing
+            is returned. The merge is recorded internally so a later
+            :meth:`remove_model` call can undo it.
+
         Raises
         ------
         TypeError
@@ -1151,17 +1471,37 @@ class OpenSimModel:
     def remove_model(self, other: "OpenSimModel") -> None:
         """Undo a previous :meth:`add_model` call for ``other``.
 
+        Removes exactly the components that call added (tracked
+        internally by :meth:`add_model`), in reverse order of the 8
+        ``_MERGE_SETS`` categories so dependents (forces, markers,
+        constraints, ...) are removed before the joints and bodies they
+        reference -- removing them in the other order crashes OpenSim
+        natively rather than raising a catchable error. The shared
+        ground anchor frame created for a ground-attached joint (if any)
+        is deliberately left behind as a harmless orphan.
+
         Parameters
         ----------
         other : OpenSimModel
             Model previously merged into this one via :meth:`add_model`.
+            ``other`` itself is not modified or consulted beyond identity
+            (``id(other)``) -- only the record of what was added on its
+            behalf matters.
+
+        Returns
+        -------
+        None
+            Removes the previously merged components from ``self`` in
+            place; nothing is returned.
 
         Raises
         ------
         TypeError
             If ``other`` is not an ``OpenSimModel``.
         ValueError
-            If ``other`` was never merged into this model.
+            If ``other`` was never merged into this model via
+            :meth:`add_model`, or was already removed by a prior
+            :meth:`remove_model` call.
         """
         if not isinstance(other, OpenSimModel):
             raise TypeError(
@@ -1210,6 +1550,39 @@ class OpenSimModel:
         ...)``: see :func:`~opensim_models.operators.add_body` for the full
         semantics (imported locally to avoid a circular import, since
         :mod:`opensim_models.operators` itself imports from this module).
+
+        Parameters
+        ----------
+        name : str
+            Name for the new body.
+        mass : float
+            Mass, in kilograms.
+        mass_center : tuple[float, float, float], optional
+            Centre of mass in the body's own frame, in metres. Defaults to
+            the body's origin, ``(0.0, 0.0, 0.0)``.
+        inertia : tuple[float, float, float, float, float, float], optional
+            ``(Ixx, Iyy, Izz, Ixy, Ixz, Iyz)`` central inertia tensor, in
+            kg*m^2. Defaults to all zeros.
+        mesh_files : str, pathlib.Path, list thereof, or None, optional
+            Path(s) to existing mesh file(s) (``.vtp``, ``.stl``, ``.obj``)
+            to attach to the body as geometry; their containing
+            directories are also registered for geometry search (see
+            :meth:`add_geometry_directory`). ``None`` (default) attaches no
+            mesh.
+        reinitialize : bool, optional
+            When ``True``, rebuild the system immediately after adding,
+            preserving the current posture/velocity. Defaults to
+            ``False`` -- leave it there and wrap this call together with
+            the joint that connects the new body in
+            :meth:`structural_change`, since the model cannot initialize a
+            system while the body has no joint yet.
+
+        Returns
+        -------
+        components.Body
+            The newly created body, wrapped -- not yet connected to
+            anything until a joint (e.g. :meth:`add_free_joint`) is added
+            for it.
         """
         from . import operators
 
@@ -1240,6 +1613,38 @@ class OpenSimModel:
         A thin wrapper equivalent to ``operators.add_free_joint(self, name,
         child_body, ...)``: see :func:`~opensim_models.operators.add_free_joint`
         for the full semantics (imported locally, see :meth:`add_body`).
+
+        Parameters
+        ----------
+        name : str
+            Name for the new joint.
+        child_body : opensim.Body or components.Body
+            Body the joint connects (its origin becomes the joint's child
+            frame, offset by ``child_position``/``child_orientation_deg``).
+        parent_frame : opensim.PhysicalFrame, components wrapper, or None, optional
+            Frame the joint connects ``child_body`` to. Defaults to this
+            model's ground (``self.model.getGround()``) when ``None``.
+        position : tuple[float, float, float], optional
+            Joint location in ``parent_frame``, in metres. Defaults to
+            ``(0.0, 0.0, 0.0)``; with the body's own ``mass_center`` left
+            at the origin (see :meth:`add_body`), this is the body's
+            centre of mass position in ``parent_frame``.
+        orientation_deg : tuple[float, float, float], optional
+            Joint orientation in ``parent_frame``, as X-Y-Z body-fixed
+            Euler angles in degrees about ``parent_frame``'s own axes.
+            Defaults to no tilt.
+        child_position, child_orientation_deg : tuple[float, float, float], optional
+            Same as ``position``/``orientation_deg``, but for the offset on
+            ``child_body``'s side of the joint. Both default to no offset
+            (the joint sits at the body's origin with no added tilt).
+        reinitialize : bool, optional
+            When ``True``, rebuild the system immediately after adding,
+            preserving the current posture/velocity. Defaults to ``False``.
+
+        Returns
+        -------
+        components.Joint
+            The newly created, 6-degree-of-freedom joint, wrapped.
         """
         from . import operators
 
@@ -1272,6 +1677,37 @@ class OpenSimModel:
         A thin wrapper equivalent to ``operators.add_pin_joint(self, name,
         child_body, ...)``: see :func:`~opensim_models.operators.add_pin_joint`
         for the full semantics (imported locally, see :meth:`add_body`).
+
+        Parameters
+        ----------
+        name : str
+            Name for the new joint.
+        child_body : opensim.Body or components.Body
+            Body the joint connects (its origin becomes the joint's child
+            frame, offset by ``child_position``/``child_orientation_deg``).
+        parent_frame : opensim.PhysicalFrame, components wrapper, or None, optional
+            Frame the joint connects ``child_body`` to. Defaults to this
+            model's ground when ``None``.
+        position : tuple[float, float, float], optional
+            Joint location in ``parent_frame``, in metres. Defaults to
+            ``(0.0, 0.0, 0.0)``.
+        orientation_deg : tuple[float, float, float], optional
+            Joint orientation in ``parent_frame``, as X-Y-Z body-fixed
+            Euler angles in degrees about ``parent_frame``'s own axes.
+            The pin's rotation axis is the Z axis of its own joint frame,
+            so use this to point that axis wherever the hinge should
+            rotate about. Defaults to no tilt.
+        child_position, child_orientation_deg : tuple[float, float, float], optional
+            Same as ``position``/``orientation_deg``, but for the offset on
+            ``child_body``'s side of the joint. Both default to no offset.
+        reinitialize : bool, optional
+            When ``True``, rebuild the system immediately after adding,
+            preserving the current posture/velocity. Defaults to ``False``.
+
+        Returns
+        -------
+        components.Joint
+            The newly created, single-rotational-dof joint, wrapped.
         """
         from . import operators
 
@@ -1304,6 +1740,35 @@ class OpenSimModel:
         A thin wrapper equivalent to ``operators.add_ball_joint(self, name,
         child_body, ...)``: see :func:`~opensim_models.operators.add_ball_joint`
         for the full semantics (imported locally, see :meth:`add_body`).
+
+        Parameters
+        ----------
+        name : str
+            Name for the new joint.
+        child_body : opensim.Body or components.Body
+            Body the joint connects (its origin becomes the joint's child
+            frame, offset by ``child_position``/``child_orientation_deg``).
+        parent_frame : opensim.PhysicalFrame, components wrapper, or None, optional
+            Frame the joint connects ``child_body`` to. Defaults to this
+            model's ground when ``None``.
+        position : tuple[float, float, float], optional
+            Joint location in ``parent_frame``, in metres. Defaults to
+            ``(0.0, 0.0, 0.0)``.
+        orientation_deg : tuple[float, float, float], optional
+            Joint orientation in ``parent_frame``, as X-Y-Z body-fixed
+            Euler angles in degrees about ``parent_frame``'s own axes.
+            Defaults to no tilt.
+        child_position, child_orientation_deg : tuple[float, float, float], optional
+            Same as ``position``/``orientation_deg``, but for the offset on
+            ``child_body``'s side of the joint. Both default to no offset.
+        reinitialize : bool, optional
+            When ``True``, rebuild the system immediately after adding,
+            preserving the current posture/velocity. Defaults to ``False``.
+
+        Returns
+        -------
+        components.Joint
+            The newly created, 3-rotational-dof joint, wrapped.
         """
         from . import operators
 
@@ -1337,6 +1802,37 @@ class OpenSimModel:
         name, child_body, ...)``: see
         :func:`~opensim_models.operators.add_slider_joint` for the full
         semantics (imported locally, see :meth:`add_body`).
+
+        Parameters
+        ----------
+        name : str
+            Name for the new joint.
+        child_body : opensim.Body or components.Body
+            Body the joint connects (its origin becomes the joint's child
+            frame, offset by ``child_position``/``child_orientation_deg``).
+        parent_frame : opensim.PhysicalFrame, components wrapper, or None, optional
+            Frame the joint connects ``child_body`` to. Defaults to this
+            model's ground when ``None``.
+        position : tuple[float, float, float], optional
+            Joint location in ``parent_frame``, in metres. Defaults to
+            ``(0.0, 0.0, 0.0)``.
+        orientation_deg : tuple[float, float, float], optional
+            Joint orientation in ``parent_frame``, as X-Y-Z body-fixed
+            Euler angles in degrees about ``parent_frame``'s own axes.
+            The slider's translation axis is the X axis of its own joint
+            frame, so use this to point that axis wherever it should slide
+            along. Defaults to no tilt.
+        child_position, child_orientation_deg : tuple[float, float, float], optional
+            Same as ``position``/``orientation_deg``, but for the offset on
+            ``child_body``'s side of the joint. Both default to no offset.
+        reinitialize : bool, optional
+            When ``True``, rebuild the system immediately after adding,
+            preserving the current posture/velocity. Defaults to ``False``.
+
+        Returns
+        -------
+        components.Joint
+            The newly created, single-translational-dof joint, wrapped.
         """
         from . import operators
 
@@ -1364,11 +1860,40 @@ class OpenSimModel:
         child_orientation_deg: tuple[float, float, float] = (0.0, 0.0, 0.0),
         reinitialize: bool = False,
     ) -> "components.Joint":
-        """Construct an ``opensim.WeldJoint`` (0 dof) and add it to this model.
+        """Construct an ``opensim.WeldJoint`` (0 dof, rigid attachment) and add it to this model.
 
         A thin wrapper equivalent to ``operators.add_weld_joint(self, name,
         child_body, ...)``: see :func:`~opensim_models.operators.add_weld_joint`
         for the full semantics (imported locally, see :meth:`add_body`).
+
+        Parameters
+        ----------
+        name : str
+            Name for the new joint.
+        child_body : opensim.Body or components.Body
+            Body the joint connects (its origin becomes the joint's child
+            frame, offset by ``child_position``/``child_orientation_deg``).
+        parent_frame : opensim.PhysicalFrame, components wrapper, or None, optional
+            Frame the joint connects ``child_body`` to. Defaults to this
+            model's ground when ``None``.
+        position : tuple[float, float, float], optional
+            Joint location in ``parent_frame``, in metres. Defaults to
+            ``(0.0, 0.0, 0.0)``.
+        orientation_deg : tuple[float, float, float], optional
+            Joint orientation in ``parent_frame``, as X-Y-Z body-fixed
+            Euler angles in degrees about ``parent_frame``'s own axes.
+            Defaults to no tilt.
+        child_position, child_orientation_deg : tuple[float, float, float], optional
+            Same as ``position``/``orientation_deg``, but for the offset on
+            ``child_body``'s side of the joint. Both default to no offset.
+        reinitialize : bool, optional
+            When ``True``, rebuild the system immediately after adding,
+            preserving the current posture/velocity. Defaults to ``False``.
+
+        Returns
+        -------
+        components.Joint
+            The newly created, zero-dof (rigid) joint, wrapped.
         """
         from . import operators
 
@@ -1391,6 +1916,8 @@ class OpenSimModel:
         to: Any,
         child_point: Any = "com",
         parent_point: Any = "com",
+        child_orientation_deg: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        parent_orientation_deg: tuple[float, float, float] = (0.0, 0.0, 0.0),
         joint_type: str = "weld",
         name: str | None = None,
         reinitialize: bool = False,
@@ -1402,6 +1929,50 @@ class OpenSimModel:
         :func:`~opensim_models.operators.attach_component` for the full
         semantics (imported locally, see :meth:`add_body`) -- including why
         ``child``/``to`` must already both be in this model.
+
+        Parameters
+        ----------
+        child : opensim.PhysicalFrame or components wrapper
+            The body (already in this model) to re-attach. Its current
+            joint is removed and replaced by a new one; its placement
+            before this call becomes irrelevant.
+        to : opensim.PhysicalFrame or components wrapper
+            The body (already in this model) ``child`` attaches to.
+        child_point : ``"com"`` or tuple[float, float, float], optional
+            Attachment point on ``child``, in its own local frame, in
+            metres. ``"com"`` (default) uses ``child``'s centre of mass.
+        parent_point : ``"com"`` or tuple[float, float, float], optional
+            Attachment point on ``to``, in its own local frame, in metres.
+            ``"com"`` (default) uses ``to``'s centre of mass.
+        child_orientation_deg, parent_orientation_deg : tuple[float, float, float], optional
+            Orientation of the new joint's frame on each side, as X-Y-Z
+            body-fixed Euler degrees about that side's own local axes.
+            Both default to no tilt.
+        joint_type : str, optional
+            One of ``"free"``, ``"pin"``, ``"ball"``, ``"slider"``, or
+            ``"weld"`` (default) -- the same joint types
+            :meth:`add_free_joint`/:meth:`add_pin_joint`/etc. build.
+        name : str or None, optional
+            Name for the new joint. Defaults (``None``) to
+            ``"{child_name}_to_{to_name}"``.
+        reinitialize : bool, optional
+            When ``True``, rebuild the system immediately after
+            re-attaching, preserving the current posture/velocity.
+            Defaults to ``False``.
+
+        Returns
+        -------
+        components.Joint
+            The newly created joint connecting ``child`` to ``to``,
+            wrapped.
+
+        Raises
+        ------
+        ValueError
+            If ``child`` is not currently connected by any joint in this
+            model (e.g. it was never merged in, or was already removed),
+            or if ``joint_type`` is not one of ``"free"``, ``"pin"``,
+            ``"ball"``, ``"slider"`` or ``"weld"``.
         """
         from . import operators
 
@@ -1411,6 +1982,8 @@ class OpenSimModel:
             to=to,
             child_point=child_point,
             parent_point=parent_point,
+            child_orientation_deg=child_orientation_deg,
+            parent_orientation_deg=parent_orientation_deg,
             joint_type=joint_type,
             name=name,
             reinitialize=reinitialize,
@@ -1422,6 +1995,24 @@ class OpenSimModel:
         A thin wrapper equivalent to ``operators.add_force(self, force,
         ...)``: see :func:`~opensim_models.operators.add_force` for the
         full semantics (imported locally, see :meth:`add_body`).
+
+        Parameters
+        ----------
+        force : opensim.Force
+            The already-constructed force/actuator, e.g. a
+            ``opensim.Millard2012EquilibriumMuscle`` or
+            ``opensim.CoordinateActuator``. Muscles are a ``Force``
+            subtype in OpenSim, so :meth:`add_muscle` is simply a named
+            convenience for building one and adding it here.
+        reinitialize : bool, optional
+            When ``True``, rebuild the system immediately after adding,
+            preserving the current posture/velocity. Defaults to
+            ``False``.
+
+        Returns
+        -------
+        components.Force
+            ``force``, wrapped, for chaining.
         """
         from . import operators
 
@@ -1450,6 +2041,53 @@ class OpenSimModel:
         insertion_position, ...)``: see
         :func:`~opensim_models.operators.add_muscle` for the full
         semantics (imported locally, see :meth:`add_body`).
+
+        Parameters
+        ----------
+        name : str
+            Name for the new muscle.
+        origin_component, insertion_component : opensim.PhysicalFrame or components wrapper
+            The body (or other physical frame) each end of the muscle's
+            path attaches to.
+        origin_position, insertion_position : tuple[float, float, float]
+            Attachment point, in metres, in the local frame of
+            ``origin_component``/``insertion_component`` respectively.
+        max_isometric_force : float, optional
+            Maximum isometric force, in newtons. Defaults to ``1000.0``.
+        optimal_fiber_length : float, optional
+            Optimal fiber length, in metres. Defaults to ``0.1``.
+        tendon_slack_length : float, optional
+            Tendon slack length, in metres. Defaults to ``0.2``.
+        pennation_angle_deg : float, optional
+            Pennation angle at optimal fiber length, in degrees (converted
+            to radians for the raw constructor). Defaults to ``0.0``.
+        via_points : sequence of (component, (x, y, z)), optional
+            Extra path points inserted, in order, between the origin and
+            insertion attachments, e.g. to wrap a muscle's path around a
+            joint -- each ``(x, y, z)`` is in metres, in that point's own
+            component's local frame. Empty by default (a straight
+            origin-to-insertion path).
+        muscle_class : str, optional
+            Name of the ``opensim`` muscle class to instantiate (looked up
+            as an attribute of ``self.opensim``). Must accept the
+            ``(name, max_isometric_force, optimal_fiber_length,
+            tendon_slack_length, pennation_angle)`` constructor signature.
+            Defaults to ``"Millard2012EquilibriumMuscle"``.
+        reinitialize : bool, optional
+            When ``True``, rebuild the system immediately after adding,
+            preserving the current posture/velocity. Defaults to
+            ``False``.
+
+        Returns
+        -------
+        components.Muscle
+            The newly created muscle, wrapped.
+
+        Raises
+        ------
+        AttributeError
+            If ``muscle_class`` does not name an attribute of the
+            ``opensim`` module.
         """
         from . import operators
 
@@ -1475,6 +2113,21 @@ class OpenSimModel:
         A thin wrapper equivalent to ``operators.add_marker(self, marker,
         ...)``: see :func:`~opensim_models.operators.add_marker` for the
         full semantics (imported locally, see :meth:`add_body`).
+
+        Parameters
+        ----------
+        marker : opensim.Marker
+            The already-constructed marker (with its name, parent frame,
+            and local-frame ``location`` already set).
+        reinitialize : bool, optional
+            When ``True``, rebuild the system immediately after adding,
+            preserving the current posture/velocity. Defaults to
+            ``False``.
+
+        Returns
+        -------
+        components.Marker
+            ``marker``, wrapped, for chaining.
         """
         from . import operators
 
@@ -1489,6 +2142,24 @@ class OpenSimModel:
         constraint, ...)``: see
         :func:`~opensim_models.operators.add_constraint` for the full
         semantics (imported locally, see :meth:`add_body`).
+
+        Parameters
+        ----------
+        constraint : opensim.Constraint
+            The already-constructed constraint, e.g. an
+            ``opensim.CoordinateCouplerConstraint``. For the common
+            constraint types, see the named convenience methods instead:
+            :meth:`add_weld_constraint`, :meth:`add_point_constraint`,
+            :meth:`add_coordinate_coupler_constraint`.
+        reinitialize : bool, optional
+            When ``True``, rebuild the system immediately after adding,
+            preserving the current posture/velocity. Defaults to
+            ``False``.
+
+        Returns
+        -------
+        components.Constraint
+            ``constraint``, wrapped, for chaining.
         """
         from . import operators
 
@@ -1511,7 +2182,32 @@ class OpenSimModel:
         A thin wrapper equivalent to ``operators.add_weld_constraint(self,
         name, body1, body2, ...)``: see
         :func:`~opensim_models.operators.add_weld_constraint` for the full
-        semantics (imported locally, see :meth:`add_body`).
+        semantics (imported locally, see :meth:`add_body`). Unlike
+        :meth:`add_weld_joint`, this does not change the kinematic tree:
+        both bodies keep their own joints, and the constraint just forces
+        their two attachment frames to coincide.
+
+        Parameters
+        ----------
+        name : str
+            Name for the new constraint.
+        body1, body2 : opensim.PhysicalFrame or components wrapper
+            The two bodies (or other physical frames) to weld together.
+        position1, orientation1_deg : tuple[float, float, float], optional
+            Attachment point, in metres, and orientation (X-Y-Z body-fixed
+            Euler degrees) on ``body1``'s own local frame. Both default to
+            no offset.
+        position2, orientation2_deg : tuple[float, float, float], optional
+            Same as ``position1``/``orientation1_deg``, but for ``body2``.
+        reinitialize : bool, optional
+            When ``True``, rebuild the system immediately after adding,
+            preserving the current posture/velocity. Defaults to
+            ``False``.
+
+        Returns
+        -------
+        components.Constraint
+            The newly created constraint, wrapped.
         """
         from . import operators
 
@@ -1545,6 +2241,38 @@ class OpenSimModel:
         semantics (imported locally, see :meth:`add_body`) -- including a
         confirmed native-crash risk for a body-to-body (non-ground) pair;
         use :meth:`add_weld_constraint` for that case instead.
+
+        This removes 3 relative translational degrees of freedom; relative
+        orientation stays free -- use :meth:`add_weld_constraint` instead
+        if orientation should be locked too. **Only use this when one of
+        ``body1``/``body2`` is this model's ground** (``self.model.getGround()``):
+        a ``PointConstraint`` between two non-ground bodies has been
+        confirmed (OpenSim 4.6) to crash the process natively during
+        ``initSystem()``, not raise a catchable Python exception.
+
+        Parameters
+        ----------
+        name : str
+            Name for the new constraint.
+        body1 : opensim.PhysicalFrame or components wrapper
+            The first body (or other physical frame) whose point is
+            constrained.
+        position1 : tuple[float, float, float]
+            Point, in metres, in ``body1``'s own local frame.
+        body2 : opensim.PhysicalFrame or components wrapper
+            The second body (or other physical frame) whose point is
+            constrained to coincide with ``body1``'s.
+        position2 : tuple[float, float, float]
+            Point, in metres, in ``body2``'s own local frame.
+        reinitialize : bool, optional
+            When ``True``, rebuild the system immediately after adding,
+            preserving the current posture/velocity. Defaults to
+            ``False``.
+
+        Returns
+        -------
+        components.Constraint
+            The newly created constraint, wrapped.
         """
         from . import operators
 
@@ -1568,6 +2296,34 @@ class OpenSimModel:
         independent_coordinates, dependent_coordinate, function, ...)``:
         see :func:`~opensim_models.operators.add_coordinate_coupler_constraint`
         for the full semantics (imported locally, see :meth:`add_body`).
+        Whenever any independent coordinate changes, OpenSim re-solves
+        ``function`` of their values and assigns the result to
+        ``dependent_coordinate`` (e.g. a patella coupled to knee flexion).
+
+        Parameters
+        ----------
+        name : str
+            Name for the new constraint.
+        independent_coordinates : str, components.Coordinate, or a sequence of either
+            The coordinate(s) ``function`` is evaluated on, identified by
+            name or by wrapper. A single coordinate is also accepted
+            directly, not just a sequence of one.
+        dependent_coordinate : str or components.Coordinate
+            The coordinate whose value ``function``'s result is assigned
+            to, identified by name or by wrapper.
+        function : opensim.Function
+            The already-built coupling function, e.g.
+            ``opensim.LinearFunction(slope, intercept)``. Building the
+            function itself is left to the caller.
+        reinitialize : bool, optional
+            When ``True``, rebuild the system immediately after adding,
+            preserving the current posture/velocity. Defaults to
+            ``False``.
+
+        Returns
+        -------
+        components.Constraint
+            The newly created constraint, wrapped.
         """
         from . import operators
 
@@ -1589,6 +2345,20 @@ class OpenSimModel:
         controller, ...)``: see
         :func:`~opensim_models.operators.add_controller` for the full
         semantics (imported locally, see :meth:`add_body`).
+
+        Parameters
+        ----------
+        controller : opensim.Controller
+            The already-constructed controller.
+        reinitialize : bool, optional
+            When ``True``, rebuild the system immediately after adding,
+            preserving the current posture/velocity. Defaults to
+            ``False``.
+
+        Returns
+        -------
+        components.Controller
+            ``controller``, wrapped, for chaining.
         """
         from . import operators
 
@@ -1603,6 +2373,21 @@ class OpenSimModel:
         contact_geometry, ...)``: see
         :func:`~opensim_models.operators.add_contact_geometry` for the full
         semantics (imported locally, see :meth:`add_body`).
+
+        Parameters
+        ----------
+        contact_geometry : opensim.ContactGeometry
+            The already-constructed contact geometry, e.g. an
+            ``opensim.ContactSphere``.
+        reinitialize : bool, optional
+            When ``True``, rebuild the system immediately after adding,
+            preserving the current posture/velocity. Defaults to
+            ``False``.
+
+        Returns
+        -------
+        components.ContactGeometry
+            ``contact_geometry``, wrapped, for chaining.
         """
         from . import operators
 
@@ -1616,6 +2401,20 @@ class OpenSimModel:
         A thin wrapper equivalent to ``operators.add_probe(self, probe,
         ...)``: see :func:`~opensim_models.operators.add_probe` for the
         full semantics (imported locally, see :meth:`add_body`).
+
+        Parameters
+        ----------
+        probe : opensim.Probe
+            The already-constructed probe.
+        reinitialize : bool, optional
+            When ``True``, rebuild the system immediately after adding,
+            preserving the current posture/velocity. Defaults to
+            ``False``.
+
+        Returns
+        -------
+        components.Probe
+            ``probe``, wrapped, for chaining.
         """
         from . import operators
 
@@ -1626,7 +2425,31 @@ class OpenSimModel:
 
         A thin wrapper equivalent to ``operators.remove_body(self, name,
         ...)``: see :func:`~opensim_models.operators.remove_body` for the
-        full semantics (imported locally, see :meth:`add_body`).
+        full semantics (imported locally, see :meth:`add_body`). Remove the
+        joint connecting this body (see :meth:`remove_joint`) first, and
+        any force/constraint referencing it, otherwise OpenSim crashes
+        natively rather than raising a catchable error -- wrap the body and
+        its joint removal together in :meth:`structural_change`.
+
+        Parameters
+        ----------
+        name : str
+            Name of the body to remove.
+        reinitialize : bool, optional
+            When ``True``, rebuild the system immediately after removing,
+            preserving the current posture/velocity -- only safe to use
+            when this one call is the entire structural change (e.g. the
+            body already has no joint/force/constraint referencing it).
+            Defaults to ``False``.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        ValueError
+            If no body named ``name`` exists in the model.
         """
         from . import operators
 
@@ -1638,6 +2461,26 @@ class OpenSimModel:
         A thin wrapper equivalent to ``operators.remove_joint(self, name,
         ...)``: see :func:`~opensim_models.operators.remove_joint` for the
         full semantics (imported locally, see :meth:`add_body`).
+
+        Parameters
+        ----------
+        name : str
+            Name of the joint to remove.
+        reinitialize : bool, optional
+            When ``True``, rebuild the system immediately after removing,
+            preserving the current posture/velocity -- only safe when this
+            call is the entire structural change (e.g. the orphaned body
+            is removed too, in the same batch, or already has no body).
+            Defaults to ``False``.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        ValueError
+            If no joint named ``name`` exists in the model.
         """
         from . import operators
 
@@ -1648,18 +2491,57 @@ class OpenSimModel:
 
         A thin wrapper equivalent to ``operators.remove_force(self, name,
         ...)``: see :func:`~opensim_models.operators.remove_force` for the
-        full semantics (imported locally, see :meth:`add_body`).
+        full semantics (imported locally, see :meth:`add_body`). Muscles
+        and other forces/actuators share the same underlying ``ForceSet``,
+        so this removes either kind by name; :meth:`remove_muscle` is
+        simply a named alias of this same method.
+
+        Parameters
+        ----------
+        name : str
+            Name of the force (or muscle) to remove.
+        reinitialize : bool, optional
+            When ``True``, rebuild the system immediately after removing,
+            preserving the current posture/velocity. Defaults to
+            ``False``.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        ValueError
+            If no force (or muscle) named ``name`` exists in the model.
         """
         from . import operators
 
         operators.remove_force(self, name, reinitialize=reinitialize)
 
     def remove_muscle(self, name: str, *, reinitialize: bool = False) -> None:
-        """Remove a muscle from this model, by name.
+        """Remove a muscle from this model, by name. A named alias of :meth:`remove_force`.
 
         A thin wrapper equivalent to ``operators.remove_muscle(self, name,
         ...)``: see :func:`~opensim_models.operators.remove_muscle` for the
         full semantics (imported locally, see :meth:`add_body`).
+
+        Parameters
+        ----------
+        name : str
+            Name of the muscle to remove.
+        reinitialize : bool, optional
+            When ``True``, rebuild the system immediately after removing,
+            preserving the current posture/velocity. Defaults to
+            ``False``.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        ValueError
+            If no muscle (force) named ``name`` exists in the model.
         """
         from . import operators
 
@@ -1671,6 +2553,24 @@ class OpenSimModel:
         A thin wrapper equivalent to ``operators.remove_marker(self, name,
         ...)``: see :func:`~opensim_models.operators.remove_marker` for the
         full semantics (imported locally, see :meth:`add_body`).
+
+        Parameters
+        ----------
+        name : str
+            Name of the marker to remove.
+        reinitialize : bool, optional
+            When ``True``, rebuild the system immediately after removing,
+            preserving the current posture/velocity. Defaults to
+            ``False``.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        ValueError
+            If no marker named ``name`` exists in the model.
         """
         from . import operators
 
@@ -1683,6 +2583,24 @@ class OpenSimModel:
         name, ...)``: see
         :func:`~opensim_models.operators.remove_constraint` for the full
         semantics (imported locally, see :meth:`add_body`).
+
+        Parameters
+        ----------
+        name : str
+            Name of the constraint to remove.
+        reinitialize : bool, optional
+            When ``True``, rebuild the system immediately after removing,
+            preserving the current posture/velocity. Defaults to
+            ``False``.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        ValueError
+            If no constraint named ``name`` exists in the model.
         """
         from . import operators
 
@@ -1695,6 +2613,24 @@ class OpenSimModel:
         name, ...)``: see
         :func:`~opensim_models.operators.remove_controller` for the full
         semantics (imported locally, see :meth:`add_body`).
+
+        Parameters
+        ----------
+        name : str
+            Name of the controller to remove.
+        reinitialize : bool, optional
+            When ``True``, rebuild the system immediately after removing,
+            preserving the current posture/velocity. Defaults to
+            ``False``.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        ValueError
+            If no controller named ``name`` exists in the model.
         """
         from . import operators
 
@@ -1707,6 +2643,24 @@ class OpenSimModel:
         name, ...)``: see
         :func:`~opensim_models.operators.remove_contact_geometry` for the
         full semantics (imported locally, see :meth:`add_body`).
+
+        Parameters
+        ----------
+        name : str
+            Name of the contact geometry to remove.
+        reinitialize : bool, optional
+            When ``True``, rebuild the system immediately after removing,
+            preserving the current posture/velocity. Defaults to
+            ``False``.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        ValueError
+            If no contact geometry named ``name`` exists in the model.
         """
         from . import operators
 
@@ -1718,6 +2672,24 @@ class OpenSimModel:
         A thin wrapper equivalent to ``operators.remove_probe(self, name,
         ...)``: see :func:`~opensim_models.operators.remove_probe` for the
         full semantics (imported locally, see :meth:`add_body`).
+
+        Parameters
+        ----------
+        name : str
+            Name of the probe to remove.
+        reinitialize : bool, optional
+            When ``True``, rebuild the system immediately after removing,
+            preserving the current posture/velocity. Defaults to
+            ``False``.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        ValueError
+            If no probe named ``name`` exists in the model.
         """
         from . import operators
 
@@ -1739,6 +2711,19 @@ class OpenSimModel:
         generally be relied on to satisfy a specific subclass's structural
         assumptions. Chaining (``a + b + c``) merges all three, regardless
         of grouping.
+
+        Parameters
+        ----------
+        other : OpenSimModel or a standalone component
+            The model (or standalone component, e.g. a
+            :class:`~opensim_models.components.Box`) to merge with
+            ``self``. Left unmodified by this call either way.
+
+        Returns
+        -------
+        OpenSimModel
+            A brand-new, plain ``OpenSimModel`` containing every component
+            of both ``self`` and ``other``.
 
         Raises
         ------
@@ -1763,7 +2748,22 @@ class OpenSimModel:
         """Support ``other + self`` when ``other`` did not implement ``__add__``.
 
         See :meth:`__add__` for what kinds of ``other`` are accepted (this
-        is simply its mirror image).
+        is simply its mirror image). Python calls this automatically for
+        ``other + self`` whenever ``other``'s own ``__add__`` returns
+        ``NotImplemented`` for an ``OpenSimModel`` right-hand side (or
+        ``other`` has none) -- it is not meant to be called directly.
+
+        Parameters
+        ----------
+        other : OpenSimModel or a standalone component
+            The left-hand operand being added to ``self``. Left unmodified
+            by this call either way.
+
+        Returns
+        -------
+        OpenSimModel
+            A brand-new, plain ``OpenSimModel`` containing every component
+            of both ``other`` and ``self``.
 
         Raises
         ------
