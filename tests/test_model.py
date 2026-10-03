@@ -356,6 +356,83 @@ def test_set_marker_location_rejects_non_finite_values():
 
 
 # ---------------------------------------------------------------------------
+# Ground-frame / local positions (position_global / position_local)
+# ---------------------------------------------------------------------------
+
+
+def test_body_position_global_matches_raw_opensim_position_in_ground():
+    model = make_model()
+    tibia = model.body("tibia_r")
+
+    model.model.realizePosition(model.state)
+    raw_position = model.model.getBodySet().get("tibia_r").getPositionInGround(model.state)
+    expected = (raw_position.get(0), raw_position.get(1), raw_position.get(2))
+
+    assert tibia.position_global == pytest.approx(expected)
+
+
+def test_body_position_local_is_always_the_origin():
+    model = make_model()
+
+    assert model.body("tibia_r").position_local == (0.0, 0.0, 0.0)
+
+
+def test_body_position_global_reflects_a_posture_change():
+    model = make_model()
+    before = model.body("tibia_r").position_global
+
+    model.coordinate("knee_angle_r").set_value_degrees(45.0)
+    model.update_state()
+    after = model.body("tibia_r").position_global
+
+    assert after != pytest.approx(before)
+
+
+def test_marker_position_global_matches_get_location_in_ground():
+    model = make_model()
+    marker = model.marker("RTOE")
+
+    model.model.realizePosition(model.state)
+    raw_location = model.model.getMarkerSet().get("RTOE").getLocationInGround(model.state)
+    expected = (raw_location.get(0), raw_location.get(1), raw_location.get(2))
+
+    assert marker.position_global == pytest.approx(expected)
+
+
+def test_marker_position_local_matches_location():
+    model = make_model()
+    marker = model.marker("RTOE")
+    marker.set_location((0.1, 0.02, 0.03))
+
+    assert marker.position_local == marker.location == pytest.approx((0.1, 0.02, 0.03))
+
+
+def test_joint_position_global_matches_child_frame_position_in_ground():
+    model = make_model()
+    joint = model.joint("hip_r")
+
+    model.model.realizePosition(model.state)
+    raw_child = model.model.getJointSet().get("hip_r").getChildFrame()
+    raw_position = raw_child.getPositionInGround(model.state)
+    expected = (raw_position.get(0), raw_position.get(1), raw_position.get(2))
+
+    assert joint.position_global == pytest.approx(expected)
+
+
+def test_joint_position_local_matches_child_offset_frame_translation():
+    model = make_model()
+    joint = model.joint("hip_r")
+
+    raw_child = model.model.getJointSet().get("hip_r").getChildFrame()
+    offset = opensim.PhysicalOffsetFrame.safeDownCast(raw_child)
+    assert offset is not None  # confirmed for every joint in the bundled model
+    translation = offset.get_translation()
+    expected = (translation.get(0), translation.get(1), translation.get(2))
+
+    assert joint.position_local == pytest.approx(expected)
+
+
+# ---------------------------------------------------------------------------
 # Muscles
 # ---------------------------------------------------------------------------
 

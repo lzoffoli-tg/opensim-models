@@ -33,13 +33,30 @@ _FOOT_MARKER_NAMES = {
 }
 
 
+def _validate_mass_kg(mass_kg: float) -> None:
+    """Raise ``ValueError`` unless ``mass_kg`` is a finite, strictly positive number.
+
+    Shared by the constructor's ``mass_kg`` parameter and
+    :meth:`User.set_mass_kg`, so both reject the same values with the same
+    message.
+    """
+    if not math.isfinite(mass_kg) or mass_kg <= 0:
+        raise ValueError("mass_kg must be a positive finite value in kilograms")
+
+
 class User(OpenSimModel, _PostureMixin, _JointCenterMixin):
     """An ANSUR-based anthropometric user backed by an OpenSim model.
 
     Built from the Rajagopal-Lai-Uhlrich full-body OpenSim model
     (``rajagopalaiulrich2023.osim``, bundled under ``assets/``), scaled
     per-body to the requested anthropometry using ANSUR II reference data
-    (see "Scaling antropometrico" in the package README). Every joint angle
+    (see "Scaling antropometrico" in the package README), then calibrated
+    so the model's total mass matches a real anthropometric mass reference
+    (``mass_kg``, if given, otherwise the resolved ANSUR ``weight_kg`` --
+    see :attr:`mass_kg`) rather than whatever the geometric scaling alone
+    produces volumetrically; unlike every other anthropometric parameter
+    here, total mass can also be recalibrated after construction, via
+    :meth:`set_mass_kg`. Every joint angle
     is exposed through a ``set_<joint>_<motion>``/``<joint>_<motion>``
     setter/getter pair (see the posture methods further below), and every
     major joint centre, segment length, and ANSUR-derived body measurement
@@ -69,6 +86,23 @@ class User(OpenSimModel, _PostureMixin, _JointCenterMixin):
         independently per measurement (no single reference subject is
         selected, and no interpolation is performed across different
         measurements).
+    mass_kg : float or None, optional
+        Requested total body mass, in kilograms. If provided, it is used
+        as an *independent* scaling input, exactly like ``height_cm``: once
+        every body has been scaled geometrically (see "Scaling
+        antropometrico" in the README), every body's mass *and* inertia
+        tensor are uniformly rescaled (a single scalar factor, via
+        ``opensim.Body.scaleMass``) so the whole model's total mass
+        (``self.model.getTotalMass(self.state)``) matches ``mass_kg`` exactly --
+        independent of whatever the height-driven geometric scaling alone
+        would have produced volumetrically. If not provided (the default),
+        the same rescaling is still applied, but targeting the ANSUR
+        ``weight_kg`` resolved for this user's height/percentile (see
+        :attr:`anthropometry`) -- i.e. mass is always resolved "like the
+        other measurements" (from height when given, via
+        :func:`~opensim_models.models.user._data.resolve_reference`),
+        never left as a pure side effect of geometric scaling. See
+        :attr:`mass_kg` to read back the resolved value either way.
     dataset : str or pathlib.Path, optional
         Path to the ANSUR II reference CSV to resolve measurements from.
         Defaults to the dataset bundled with this package.
@@ -80,8 +114,9 @@ class User(OpenSimModel, _PostureMixin, _JointCenterMixin):
     ------
     ValueError
         If ``gender`` is not ``"M"``/``"F"``, if ``height`` is given but is
-        not a positive finite number, or if ``percentile`` is not finite or
-        falls outside ``[0.1, 99.9]``.
+        not a positive finite number, if ``percentile`` is not finite or
+        falls outside ``[0.1, 99.9]``, or if ``mass_kg`` is given but is not
+        a positive finite number.
     """
 
     def __init__(
@@ -89,23 +124,29 @@ class User(OpenSimModel, _PostureMixin, _JointCenterMixin):
         gender: str | Literal["M", "F"],
         height_cm: float | None = None,
         percentile: float = 50.0,
+        mass_kg: float | None = None,
         *,
         dataset: str | Path = DEFAULT_DATASET,
         model_path: str | Path = DEFAULT_MODEL_PATH,
     ):
-        """Resolve anthropometry, load the base model, and scale it.
+        """Resolve anthropometry, load the base model, scale it, and calibrate its total mass.
 
         See the class docstring for the full description of ``gender``,
-        ``height``, ``percentile``, ``dataset``, and ``model_path``, and of
-        the conditions under which a :class:`ValueError` or
-        :class:`UserWarning` is raised. After resolving the anthropometric
-        reference, this loads ``model_path`` (unlocking every coordinate --
-        see ``OpenSimModel._unlock_coordinates``), registers the bundled
-        mesh directory for rendering, and scales every body via
-        :meth:`scale_bodies` using per-segment factors derived by comparing
-        the resolved reference against the 50th-percentile baseline for the
-        same ``gender`` (see "Scaling antropometrico" in the README).
+        ``height``, ``percentile``, ``mass_kg``, ``dataset``, and
+        ``model_path``, and of the conditions under which a
+        :class:`ValueError` or :class:`UserWarning` is raised. After
+        resolving the anthropometric reference, this loads ``model_path``
+        (unlocking every coordinate -- see ``OpenSimModel._unlock_coordinates``),
+        registers the bundled mesh directory for rendering, scales every
+        body via :meth:`scale_bodies` using per-segment factors derived by
+        comparing the resolved reference against the 50th-percentile
+        baseline for the same ``gender`` (see "Scaling antropometrico" in
+        the README), and finally calibrates the whole model's total mass
+        (see :meth:`_rescale_total_mass`) to ``mass_kg`` if given, or to the
+        resolved ANSUR ``weight_kg`` otherwise.
         """
+        if mass_kg is not None:
+            _validate_mass_kg(mass_kg)
         self._reference = resolve_reference(gender, height_cm, percentile, dataset)
         # Register the mesh directory before the model file is loaded: the
         # bodies' attached Mesh geometry resolves its file immediately while
@@ -118,6 +159,57 @@ class User(OpenSimModel, _PostureMixin, _JointCenterMixin):
         baseline = resolve_reference(self.gender, percentile=50.0, dataset=dataset)
         factors = segment_scale_factors(self._reference, baseline)
         self.scale_bodies(self._expand_bilateral_bodies(factors))
+        # Geometric scaling alone only moves mass as a volumetric side
+        # effect (OpenSim's own preserveMassDist=True, driven purely by the
+        # height-derived per-body scale factors above) -- not calibrated
+        # against any real mass reference. This always (re)calibrates the
+        # model's total mass against either the explicit mass_kg or, if not
+        # given, the ANSUR weight_kg resolved for this user, exactly as
+        # every other anthropometric measurement is already resolved "from
+        # height when given, else from percentile".
+        target_mass_kg = (
+            mass_kg if mass_kg is not None else self._reference.values["weight_kg"]
+        )
+        self._rescale_total_mass(target_mass_kg)
+        self._mass_kg = target_mass_kg
+
+    def _rescale_total_mass(self, mass_kg: float) -> None:
+        """Uniformly rescale every body's mass and inertia so the model's total mass matches ``mass_kg`` exactly.
+
+        Applies one scalar correction factor (``mass_kg`` divided by the
+        model's current ``getTotalMass(self.state)``, i.e. whatever the geometric,
+        height-driven scaling in :meth:`scale_bodies` produced
+        volumetrically) to every body via ``opensim.Body.scaleMass`` --
+        confirmed directly against a hand-built body that this native
+        OpenSim method scales both ``mass`` *and* the full inertia tensor
+        (moments and products alike) by the same factor, leaving
+        ``mass_center`` untouched. A single uniform factor across every
+        body keeps each body's relative share of the total mass (and each
+        one's own radius of gyration/shape) exactly as the geometric
+        scaling left it; only the overall scale of "how heavy" changes.
+
+        Mass feeds into the multibody system's mass matrix, built once in
+        ``initSystem()`` -- the same reason
+        :meth:`~opensim_models.components.Body.set_mass` calls
+        :meth:`~opensim_models.model.OpenSimModel.reinitialize` after
+        changing a single body's mass -- so this does the same once every
+        body has been rescaled, preserving whatever posture is current when
+        it runs (the model's still-default posture, the first time this
+        runs inside the constructor; otherwise whatever :meth:`set_mass_kg`
+        found current when it was called).
+
+        Parameters
+        ----------
+        mass_kg : float
+            Target total body mass, in kilograms. Expected to already be
+            validated (finite, strictly positive) by the caller -- see
+            the constructor's own ``mass_kg`` validation.
+        """
+        scale_factor = mass_kg / self.model.getTotalMass(self.state)
+        body_set = self.model.getBodySet()
+        for index in range(body_set.getSize()):
+            body_set.get(index).scaleMass(scale_factor)
+        self.reinitialize()
 
     @property
     def gender(self):
@@ -167,6 +259,56 @@ class User(OpenSimModel, _PostureMixin, _JointCenterMixin):
             Percentile in the inclusive range ``[0.1, 99.9]``.
         """
         return self._reference.percentile
+
+    @property
+    def mass_kg(self):
+        """Return this user's resolved and calibrated total body mass, in kilograms.
+
+        If the constructor was called with ``mass_kg=...`` (or
+        :meth:`set_mass_kg` was called afterward), this is exactly that
+        value. Otherwise, it is the ANSUR ``weight_kg`` resolved for this
+        user's height/percentile (see :attr:`anthropometry`). Either way,
+        this is not just a label: ``self.model.getTotalMass(self.state)``
+        is calibrated to match it exactly (see :meth:`_rescale_total_mass`),
+        unlike the purely volumetric, height-driven mass that the
+        geometric per-body scaling alone would otherwise leave in place.
+
+        Returns
+        -------
+        float
+            Total body mass, in kilograms.
+        """
+        return self._mass_kg
+
+    def set_mass_kg(self, mass_kg: float) -> None:
+        """Recalibrate this user's total body mass to ``mass_kg``, in kilograms.
+
+        Unlike every other anthropometric parameter on ``User`` (``gender``,
+        ``height_cm``/:attr:`height`, ``percentile``), which are resolved
+        once at construction time with no post-construction setter, total
+        mass can be changed afterward: this re-applies the same independent
+        mass correction the constructor itself uses (see
+        :meth:`_rescale_total_mass`) directly to the already geometrically
+        scaled model, rather than rebuilding it from scratch. Safe to call
+        more than once, and safe to call regardless of whether the
+        constructor was given an explicit ``mass_kg`` or not -- it always
+        rescales from whatever the model's current total mass happens to be
+        right now to the new target.
+
+        Parameters
+        ----------
+        mass_kg : float
+            New target total body mass, in kilograms. Must be finite and
+            strictly positive.
+
+        Raises
+        ------
+        ValueError
+            If ``mass_kg`` is not finite or not strictly positive.
+        """
+        _validate_mass_kg(mass_kg)
+        self._rescale_total_mass(mass_kg)
+        self._mass_kg = mass_kg
 
     @property
     def anthropometry(self):

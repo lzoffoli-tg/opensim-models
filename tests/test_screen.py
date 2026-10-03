@@ -104,6 +104,22 @@ def test_default_angle_stands_the_panel_upright():
     assert parent.get_orientation()[0] == pytest.approx(0.0)
 
 
+def test_position_global_matches_center_coordinates():
+    # Screen has no Box-style `origin` property of its own; the inherited
+    # Body.position_global (ground-frame body origin) is, for a screen (a
+    # single uniform body with mass_center=(0, 0, 0)), the same point as
+    # (center_x, center_y, center_z).
+    screen = Screen(center_x=1.0, center_y=2.0, center_z=3.0, angle_deg=45.0)
+
+    assert screen.position_global == pytest.approx((1.0, 2.0, 3.0))
+
+
+def test_position_local_is_always_the_origin():
+    screen = Screen(center_x=1.0, center_y=2.0, center_z=3.0)
+
+    assert screen.position_local == (0.0, 0.0, 0.0)
+
+
 # ---------------------------------------------------------------------------
 # rotate()/translate()
 # ---------------------------------------------------------------------------

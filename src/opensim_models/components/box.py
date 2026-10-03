@@ -292,14 +292,18 @@ class Box(Body):
     def origin(self) -> tuple[float, float, float]:
         """Current box centre in the ground frame, in metres.
 
-        Read directly off the body's placement, so it reflects the
-        constructor's ``origin``, :meth:`set_origin`, a dimension setter
-        (pose-preserving), or any :meth:`rotate`/:meth:`translate` applied
-        since -- never a stale cached value.
+        A box has ``mass_center=(0, 0, 0)`` in its own frame (see
+        :meth:`_rebuild`), so this is exactly the same value as the
+        inherited :attr:`~opensim_models.components.Body.position_global`
+        (kept as its own, longer-standing name here since "origin" reads
+        more naturally for a box's centre than the generic
+        ``position_global``). Read directly off the body's placement, so
+        it reflects the constructor's ``origin``, :meth:`set_origin`, a
+        dimension setter (pose-preserving), or any
+        :meth:`rotate`/:meth:`translate` applied since -- never a stale
+        cached value.
         """
-        self._container.model.realizePosition(self._container.state)
-        position = self.raw.getPositionInGround(self._container.state)
-        return (position.get(0), position.get(1), position.get(2))
+        return self.position_global
 
     def set_origin(self, origin: tuple[float, float, float]) -> None:
         """Set the box's centre in the ground frame, keeping its current orientation.
@@ -323,16 +327,16 @@ class Box(Body):
     def angle_deg(self) -> tuple[float, float, float]:
         """Current box orientation in the ground frame, as X-Y-Z body-fixed Euler degrees.
 
-        Read directly off the body's placement (via its rotation matrix
-        converted through ``opensim.Rotation``), so it reflects the
-        constructor's ``angle_deg``, :meth:`set_angle_deg`, a dimension
-        setter (pose-preserving), or any :meth:`rotate` applied since --
-        never a stale cached value.
+        An alias of the inherited
+        :attr:`~opensim_models.components.Body.inclination` (identical
+        computation; kept as its own, longer-standing name here since
+        "angle" reads more naturally for a box's own placement than the
+        generic "inclination"). Read directly off the body's placement, so
+        it reflects the constructor's ``angle_deg``, :meth:`set_angle_deg`,
+        a dimension setter (pose-preserving), or any :meth:`rotate` applied
+        since -- never a stale cached value.
         """
-        self._container.model.realizePosition(self._container.state)
-        rotation = self.raw.getRotationInGround(self._container.state)
-        euler = rotation.convertRotationToBodyFixedXYZ()
-        return tuple(float(np.degrees(euler.get(i))) for i in range(3))
+        return self.inclination
 
     def set_angle_deg(self, angle_deg: tuple[float, float, float]) -> None:
         """Set the box's orientation, keeping its current centre.
@@ -377,12 +381,7 @@ class Box(Body):
         :attr:`~opensim_models.components.Body.corners` -- equivalent for a
         box, but without reading the mesh file back.
         """
-        self._container.model.realizePosition(self._container.state)
-        position = np.asarray(self.raw.getPositionInGround(self._container.state).to_numpy())
-        rotation_matrix = self.raw.getRotationInGround(self._container.state).asMat33()
-        rotation = np.array(
-            [[rotation_matrix.get(i, j) for j in range(3)] for i in range(3)]
-        )
+        position, rotation = self._position_and_rotation()
         half_size = np.array([self._width, self._height, self._depth]) / 2.0
         signs = np.array(
             [(sx, sy, sz) for sx in (-1.0, 1.0) for sy in (-1.0, 1.0) for sz in (-1.0, 1.0)]

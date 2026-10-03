@@ -51,6 +51,7 @@ EXPECTED_ALL = [
     "add_sliding_point_contact",
     "rotate_object",
     "translate_object",
+    "euclidean_distance",
 ]
 
 

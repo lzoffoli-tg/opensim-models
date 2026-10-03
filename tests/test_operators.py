@@ -3,6 +3,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
@@ -294,6 +295,67 @@ def test_add_point_constraint_connects_a_body_to_ground():
 
     assert constraint.name == "point1"
     assert model.model.getConstraintSet().getSize() == 1
+
+
+# ---------------------------------------------------------------------------
+# Contact geometry: position_global / position_local
+# ---------------------------------------------------------------------------
+
+
+def test_contact_geometry_position_local_matches_its_own_location():
+    model = make_model()
+    body = add_free_body(model, "b1")
+
+    sphere = opensim.ContactSphere()
+    sphere.setName("cs1")
+    sphere.setRadius(0.05)
+    sphere.set_location(opensim.Vec3(0.1, 0.2, 0.3))
+    sphere.connectSocket_frame(body.raw)
+    operators.add_contact_geometry(model, sphere, reinitialize=True)
+
+    contact_geometry = model.contact_geometries["cs1"]
+    assert contact_geometry.position_local == pytest.approx((0.1, 0.2, 0.3))
+
+
+def test_contact_geometry_position_global_matches_its_frame_transformed_by_hand():
+    # A body welded to ground with a non-trivial offset/rotation, so this
+    # actually exercises the position+rotation transform (not just a
+    # zero-rotation pass-through) -- confirmed by hand against the same
+    # frame.getPositionInGround()/getRotationInGround() calls
+    # ContactGeometry.position_global is built on top of.
+    model = make_model()
+    body = opensim.Body("b1", 1.0, opensim.Vec3(0, 0, 0), opensim.Inertia(1, 1, 1, 0, 0, 0))
+    model.model.addBody(body)
+    joint = opensim.WeldJoint(
+        "j1",
+        model.model.getGround(),
+        opensim.Vec3(1.0, 2.0, 3.0),
+        opensim.Vec3(0.0, 0.0, 0.5),
+        body,
+        opensim.Vec3(0.0, 0.0, 0.0),
+        opensim.Vec3(0.0, 0.0, 0.0),
+    )
+    model.model.addJoint(joint)
+
+    sphere = opensim.ContactSphere()
+    sphere.setName("cs1")
+    sphere.setRadius(0.05)
+    sphere.set_location(opensim.Vec3(0.1, 0.2, 0.3))
+    sphere.connectSocket_frame(body)
+    operators.add_contact_geometry(model, sphere, reinitialize=True)
+
+    contact_geometry = model.contact_geometries["cs1"]
+
+    model.model.realizePosition(model.state)
+    raw_frame = model.model.getContactGeometrySet().get("cs1").getFrame()
+    raw_position = np.array(raw_frame.getPositionInGround(model.state).to_numpy())
+    raw_rotation_matrix = raw_frame.getRotationInGround(model.state).asMat33()
+    raw_rotation = np.array(
+        [[raw_rotation_matrix.get(i, j) for j in range(3)] for i in range(3)]
+    )
+    expected = raw_position + raw_rotation @ np.array([0.1, 0.2, 0.3])
+
+    assert contact_geometry.position_global == pytest.approx(tuple(expected))
 
 
 # ---------------------------------------------------------------------------

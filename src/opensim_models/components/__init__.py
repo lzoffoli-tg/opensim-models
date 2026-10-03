@@ -53,6 +53,80 @@ def _positive(value: float) -> float:
     return float(value)
 
 
+def _position_and_rotation_in_ground(owner: "OpenSimModel", frame: Any) -> tuple[Any, Any]:
+    """Return ``frame``'s current ``(position, rotation)`` in the ground frame.
+
+    ``position`` is a shape-``(3,)`` numpy array, in metres; ``rotation`` is
+    the matching shape-``(3, 3)`` rotation matrix (ground axes expressed in
+    terms of ``frame``'s own axes, i.e. ``ground_vector = rotation @
+    frame_vector``). Realizes ``owner.state`` through ``Stage::Position``
+    first (``owner.model.realizePosition``), so this is always safe to call
+    regardless of what has or hasn't been realized since the last posture
+    change.
+
+    This is the one piece of raw-SWIG plumbing -- ``getPositionInGround()``/
+    ``getRotationInGround().asMat33()``/rebuilding a plain 3x3 numpy array
+    from it element by element -- every ground-frame position/orientation
+    property in this module is now built on top of
+    (:attr:`Body.position_global`, :attr:`Body.com`, :attr:`Body.inclination`,
+    :attr:`Body.corners`, :class:`Marker`/:class:`ContactGeometry`/
+    :class:`Joint`'s own ``position_global``, :class:`Box`/:class:`Screen`'s
+    ``origin``/``angle_deg``/``corners``), instead of re-deriving it inline
+    in each one -- the same hand-duplicated dance that previously showed up
+    independently in at least four different places across this package.
+
+    Parameters
+    ----------
+    owner : OpenSimModel
+        The model ``frame`` belongs to -- needed to realize/read its state.
+    frame : opensim.Frame (or anything with matching getPositionInGround/getRotationInGround methods)
+        The frame to query (e.g. an ``opensim.Body``, a
+        ``PhysicalOffsetFrame``, or ``opensim.Ground`` itself).
+
+    Returns
+    -------
+    tuple[numpy.ndarray, numpy.ndarray]
+        ``(position, rotation)`` -- ``position`` has shape ``(3,)``,
+        ``rotation`` has shape ``(3, 3)``.
+    """
+    owner.model.realizePosition(owner.state)
+    position = np.asarray(frame.getPositionInGround(owner.state).to_numpy())
+    rotation_matrix = frame.getRotationInGround(owner.state).asMat33()
+    rotation = np.array(
+        [[rotation_matrix.get(i, j) for j in range(3)] for i in range(3)]
+    )
+    return position, rotation
+
+
+def _point_in_ground(
+    owner: "OpenSimModel", frame: Any, local_point: Any
+) -> tuple[float, float, float]:
+    """Transform ``local_point`` (metres, in ``frame``'s own axes) into the ground frame.
+
+    Built on :func:`_position_and_rotation_in_ground`; shared by every
+    property that must express an offset *within* some frame (a body's own
+    ``mass_center``, a marker's or contact geometry's ``location``) as a
+    ground-frame point.
+
+    Parameters
+    ----------
+    owner : OpenSimModel
+        The model ``frame`` belongs to.
+    frame : opensim.Frame
+        The frame ``local_point`` is expressed in.
+    local_point : sequence of 3 floats
+        Point, in metres, in ``frame``'s own local axes.
+
+    Returns
+    -------
+    tuple[float, float, float]
+        The equivalent point in the ground frame, in metres.
+    """
+    position, rotation = _position_and_rotation_in_ground(owner, frame)
+    local = np.asarray(local_point, dtype=float)
+    return tuple(float(value) for value in (position + rotation @ local))
+
+
 class _ComponentWrapper:
     """Base for every Python-friendly wrapper around a raw opensim component.
 
@@ -156,13 +230,37 @@ class Body(_ComponentWrapper):
         self._owner.reinitialize()
 
     def _position_and_rotation(self) -> tuple[Any, Any]:
-        self._owner.model.realizePosition(self._owner.state)
-        position = np.asarray(self._raw.getPositionInGround(self._owner.state).to_numpy())
-        rotation_matrix = self._raw.getRotationInGround(self._owner.state).asMat33()
-        rotation = np.array(
-            [[rotation_matrix.get(i, j) for j in range(3)] for i in range(3)]
-        )
-        return position, rotation
+        return _position_and_rotation_in_ground(self._owner, self._raw)
+
+    @property
+    def position_global(self) -> tuple[float, float, float]:
+        """This body's own frame origin, in the ground frame, in metres.
+
+        Computed fresh from the model's current state on every access (via
+        :func:`_position_and_rotation_in_ground`), so it always reflects
+        this body's current placement -- never a stale cached value. Not
+        the same thing as :attr:`com` (which additionally accounts for
+        this body's own ``mass_center`` offset, so the two only coincide
+        when ``mass_center`` is ``(0, 0, 0)``, as for e.g. :class:`Box`/
+        :class:`Screen`).
+        """
+        position, _ = self._position_and_rotation()
+        return tuple(float(value) for value in position)
+
+    @property
+    def position_local(self) -> tuple[float, float, float]:
+        """This body's own origin, expressed in its own local frame: always ``(0.0, 0.0, 0.0)``.
+
+        A body *is* its own local frame's origin, so this is trivially
+        zero -- not informative on its own, but present (alongside
+        :attr:`position_global`) so code written generically against "any
+        spatial element" (e.g. :class:`Marker`, :class:`ContactGeometry`,
+        :class:`Joint`, all of which have a non-trivial ``position_local``)
+        can read both properties uniformly, without needing to know ahead
+        of time whether a given element is a whole body or an offset
+        within some parent frame.
+        """
+        return (0.0, 0.0, 0.0)
 
     @property
     def com(self) -> tuple[float, float, float]:
@@ -173,10 +271,9 @@ class Body(_ComponentWrapper):
         model's centre of mass (see ``Model.calcMassCenterPosition``,
         across every body, for that).
         """
-        position, rotation = self._position_and_rotation()
         local_com = self._raw.get_mass_center()
-        local = np.array([local_com.get(0), local_com.get(1), local_com.get(2)])
-        return tuple(position + rotation @ local)
+        local = (local_com.get(0), local_com.get(1), local_com.get(2))
+        return _point_in_ground(self._owner, self._raw, local)
 
     @property
     def inclination(self) -> tuple[float, float, float]:
@@ -429,6 +526,34 @@ class Marker(_ComponentWrapper):
             raise ValueError("location must be finite")
         self._raw.set_location(self._owner.opensim.Vec3(float(x), float(y), float(z)))
 
+    @property
+    def position_global(self) -> tuple[float, float, float]:
+        """This marker's location, in the ground frame, in metres.
+
+        :attr:`location` transformed through its parent frame's current
+        ground-frame placement -- computed directly via OpenSim's own
+        ``Marker.getLocationInGround`` (equivalent to, but cheaper than,
+        going through :func:`_point_in_ground` with this marker's own
+        parent frame), after realizing the model's state through
+        ``Stage::Position``. Computed fresh on every access.
+        """
+        self._owner.model.realizePosition(self._owner.state)
+        location = self._raw.getLocationInGround(self._owner.state)
+        return (float(location.get(0)), float(location.get(1)), float(location.get(2)))
+
+    @property
+    def position_local(self) -> tuple[float, float, float]:
+        """This marker's offset within its parent frame, in metres -- the same value as :attr:`location`.
+
+        Present alongside :attr:`position_global` purely for naming
+        consistency with every other wrapper's ``position_global``/
+        ``position_local`` pair (e.g. :attr:`Body.position_local`,
+        :attr:`ContactGeometry.position_local`, :attr:`Joint.position_local`)
+        -- prefer :attr:`location`/:meth:`set_location` when working with a
+        ``Marker`` specifically, since those also support writing.
+        """
+        return self.location
+
 
 class Muscle(_ComponentWrapper):
     """Python-friendly wrapper around an ``opensim.Muscle``."""
@@ -546,6 +671,58 @@ class Joint(_ComponentWrapper):
             for i in range(self._raw.numCoordinates())
         }
 
+    @property
+    def position_global(self) -> tuple[float, float, float]:
+        """This joint's child frame position, in the ground frame, in metres.
+
+        A ``Joint`` connects a parent frame and a child frame, each
+        independently placeable -- resolving it to a *single* ground-frame
+        point means picking one of the two, and this follows the same
+        convention already used wherever else this package resolves a
+        ``Joint`` to one ground-frame point (e.g.
+        :func:`opensim_models.operators.rotate_object`'s ``origin``
+        argument, and every joint-centre property on
+        :class:`~opensim_models.models.User`, e.g. ``.left_knee``): the
+        **child** frame, not the parent's. The two coincide only while
+        this joint's own coordinate(s) sit at the value that makes them so
+        (typically zero, for a joint built by this package's
+        ``add_*_joint`` helpers, before it's actually been posed/driven).
+        Computed fresh from the model's current state on every access; use
+        ``self.raw.getParentFrame()`` directly if the parent side's
+        position is what you actually need.
+        """
+        child = self._owner.opensim.Frame.safeDownCast(self._raw.getChildFrame())
+        position, _ = _position_and_rotation_in_ground(self._owner, child)
+        return tuple(float(value) for value in position)
+
+    @property
+    def position_local(self) -> tuple[float, float, float]:
+        """This joint's child frame offset from its own immediate parent, in metres.
+
+        Matches :attr:`position_global`'s child-frame convention. Every
+        joint built by this package's ``add_*_joint`` helpers (and every
+        joint loaded from a real ``.osim`` model, confirmed directly
+        against the bundled Rajagopal-based base model) gives its child
+        frame as an ``opensim.PhysicalOffsetFrame`` -- even when built with
+        a zero offset -- in which case this is that frame's own
+        ``translation`` property: the offset from the body it's welded to,
+        in that body's own local axes. Falls back to ``(0.0, 0.0, 0.0)``
+        in the (currently unobserved, but not provably impossible) case
+        where the child frame is *not* an offset frame at all -- consistent
+        with :attr:`Body.position_local`, since a frame is trivially at
+        the origin of itself.
+        """
+        child = self._raw.getChildFrame()
+        offset = self._owner.opensim.PhysicalOffsetFrame.safeDownCast(child)
+        if offset is None:
+            return (0.0, 0.0, 0.0)
+        translation = offset.get_translation()
+        return (
+            float(translation.get(0)),
+            float(translation.get(1)),
+            float(translation.get(2)),
+        )
+
 
 class Force(_ComponentWrapper):
     """Python-friendly wrapper around an ``opensim.Force``.
@@ -604,6 +781,41 @@ class ContactGeometry(_ComponentWrapper):
     as the escape hatch to the underlying ``opensim.ContactGeometry``
     object for anything not wrapped here (e.g. a sphere's radius).
     """
+
+    @property
+    def position_global(self) -> tuple[float, float, float]:
+        """This contact geometry's location, in the ground frame, in metres.
+
+        Every concrete ``opensim.ContactGeometry`` subtype (``ContactSphere``,
+        ``ContactHalfSpace``, ``ContactMesh``, ...) shares the same base
+        ``location`` property (see :attr:`position_local`): an offset
+        within whatever ``opensim.PhysicalFrame`` it is attached to (its
+        ``frame`` socket, read via ``getFrame()``). This transforms that
+        offset through the attached frame's current ground-frame placement
+        (:func:`_point_in_ground`), after realizing the model's state
+        through ``Stage::Position``. Verified directly against a
+        ``ContactSphere`` welded to an offset ``WeldJoint`` child frame:
+        matches the sphere's actual ground-frame position (``frame``'s
+        position plus its rotation applied to ``location``).
+        """
+        frame = self._raw.getFrame()
+        local = self._raw.get_location()
+        local_point = (local.get(0), local.get(1), local.get(2))
+        return _point_in_ground(self._owner, frame, local_point)
+
+    @property
+    def position_local(self) -> tuple[float, float, float]:
+        """This contact geometry's offset within its attached frame, in metres.
+
+        A plain re-expression of OpenSim's own ``get_location()`` property
+        (shared by every concrete ``ContactGeometry`` subtype) as a tuple.
+        No ``location``/``set_location`` pair exists yet on this thin
+        wrapper (see the class docstring for why) -- use
+        ``self.raw.get_location()``/``self.raw.set_location(...)`` directly
+        to change it in the meantime.
+        """
+        local = self._raw.get_location()
+        return (float(local.get(0)), float(local.get(1)), float(local.get(2)))
 
 
 class Probe(_ComponentWrapper):

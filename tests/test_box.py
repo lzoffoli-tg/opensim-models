@@ -104,6 +104,29 @@ def test_com_matches_origin_for_a_single_uniform_body():
     assert box.com == pytest.approx(box.origin)
 
 
+def test_position_global_matches_origin():
+    # Box.origin is now a thin alias of the inherited Body.position_global
+    # (see components/box.py); this guards that equivalence directly.
+    box = Box(width=0.2, height=0.3, depth=0.4, origin=(1.0, -2.0, 0.5), angle_deg=(0.0, 0.0, 30.0))
+
+    assert box.position_global == pytest.approx(box.origin)
+    assert box.position_global == pytest.approx((1.0, -2.0, 0.5))
+
+
+def test_position_local_is_always_the_origin():
+    box = Box(width=0.2, height=0.3, depth=0.4, origin=(1.0, -2.0, 0.5))
+
+    assert box.position_local == (0.0, 0.0, 0.0)
+
+
+def test_angle_deg_matches_inclination():
+    # Box.angle_deg is now a thin alias of the inherited Body.inclination
+    # (see components/box.py); this guards that equivalence directly.
+    box = Box(width=0.1, height=0.1, depth=0.1, angle_deg=(10.0, 20.0, 30.0))
+
+    assert box.angle_deg == pytest.approx(box.inclination)
+
+
 def test_set_origin_moves_the_box_and_keeps_its_orientation():
     box = Box(width=0.1, height=0.1, depth=0.1, origin=(1.0, 1.0, 1.0), angle_deg=(10.0, 20.0, 30.0))
 

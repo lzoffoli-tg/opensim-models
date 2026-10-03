@@ -129,10 +129,10 @@ Il percentile deve appartenere all'intervallo inclusivo `[0.1, 99.9]`. Il calcol
 
 ### Altezza esplicita
 
-L'altezza è espressa in centimetri. Quando `height` è presente, ogni misura numerica (statura compresa) viene risolta **direttamente da quell'altezza**, tramite una regressione PCHIP per-misura contro i soggetti ANSUR del sesso indicato, e ha precedenza su `percentile`:
+L'altezza è espressa in centimetri. Quando `height_cm` è presente, ogni misura numerica (statura compresa) viene risolta **direttamente da quell'altezza**, tramite una regressione PCHIP per-misura contro i soggetti ANSUR del sesso indicato, e ha precedenza su `percentile`:
 
 ```python
-user = User("M", height=175.0)
+user = User("M", height_cm=175.0)
 
 print(user.height)       # 175.0: esattamente l'altezza richiesta
 print(user.percentile)   # percentile empirico corrispondente a 175 cm, solo informativo
@@ -147,11 +147,46 @@ import warnings
 
 with warnings.catch_warnings(record=True) as caught:
     warnings.simplefilter("always")
-    tall_user = User("M", height=205.0)  # oltre il massimo ANSUR maschile (~199 cm)
+    tall_user = User("M", height_cm=205.0)  # oltre il massimo ANSUR maschile (~199 cm)
 
 print(caught[0].category)   # UserWarning
 print(tall_user.height)     # 205.0
 ```
+
+### Massa esplicita
+
+Analogamente all'altezza, è possibile passare `mass_kg` al costruttore per richiedere una massa totale specifica:
+
+```python
+heavy_user = User("M", height_cm=180.0, mass_kg=110.0)
+
+print(heavy_user.mass_kg)                        # 110.0: esattamente la massa richiesta
+print(heavy_user.model.getTotalMass(heavy_user.state))  # 110.0 (a meno di arrotondamento in virgola mobile)
+```
+
+Se `mass_kg` non viene passato, la massa non resta un semplice sottoprodotto volumetrico della scalatura geometrica guidata dall'altezza: viene comunque risolta "come le altre misure", cioè dal riferimento ANSUR `weight_kg` risolto per l'altezza/percentile di quell'utente (via `resolve_reference`, la stessa regressione PCHIP contro l'altezza usata per ogni altra misura, oppure il percentile diretto se l'altezza non è stata passata):
+
+```python
+default_user = User("M", height_cm=180.0)
+
+print(default_user.mass_kg)                               # peso ANSUR medio risolto per 180 cm
+print(default_user.anthropometry.values["weight_kg"])      # stesso valore
+print(default_user.model.getTotalMass(default_user.state)) # idem
+```
+
+In entrambi i casi la geometria dei segmenti (lunghezze, marker, centri articolari) resta quella determinata dalla sola altezza: `mass_kg` scala **solo** la massa e il tensore d'inerzia di ogni corpo (fattore scalare uniforme, via `opensim.Body.scaleMass`, che scala insieme massa e tensore d'inerzia lasciando invariato il baricentro locale), non le dimensioni. `mass_kg` deve essere un valore finito e strettamente positivo, altrimenti il costruttore solleva `ValueError`.
+
+A differenza di `gender`/`height_cm`/`percentile` (risolti una sola volta alla costruzione, senza alcun setter), la massa totale può essere ricalibrata anche dopo, con `set_mass_kg` -- non ricostruisce il modello da zero, riapplica solo la correzione di massa indipendente sul modello già scalato geometricamente, preservando la postura corrente:
+
+```python
+user = User("M", height_cm=180.0)
+user.set_mass_kg(130.0)
+
+print(user.mass_kg)                           # 130.0
+print(user.model.getTotalMass(user.state))    # 130.0
+```
+
+`User` espone solo `mass_kg`/`set_mass_kg` (non anche un alias `mass`/`set_mass`): a differenza di `Box` -- dove `mass`/`mass_kg` coesistono perché `mass` è ereditato dalla classe generica `components.Body` e va comunque reindirizzato verso `set_mass_kg` -- `User` non eredita alcuna property `mass` da ridefinire, quindi un solo nome (quello esplicito sull'unità di misura) evita l'ambiguità.
 
 ## Scaling antropometrico
 
@@ -162,7 +197,8 @@ Durante la costruzione di `User` vengono eseguiti questi passaggi:
 3. calcolo del percentile comune per tutte le misure;
 4. confronto con il riferimento del 50° percentile dello stesso sesso;
 5. costruzione dei fattori `(x, y, z)` per i corpi OpenSim;
-6. applicazione tramite `OpenSim.Model.scale` e `ScaleSet` (ereditata da `OpenSimModel.scale_bodies`).
+6. applicazione tramite `OpenSim.Model.scale` e `ScaleSet` (ereditata da `OpenSimModel.scale_bodies`);
+7. ricalibrazione della massa totale del modello (`User._rescale_total_mass`): un fattore scalare uniforme (`mass_kg` richiesto, o altrimenti il `weight_kg` ANSUR risolto, diviso per la massa totale ottenuta dal solo scaling geometrico) viene applicato a ogni corpo con `opensim.Body.scaleMass`, che scala coerentemente massa e tensore d'inerzia. Questo passaggio avviene **sempre**, non solo quando `mass_kg` è esplicito -- vedi "Massa esplicita" sopra.
 
 La scalatura nativa OpenSim aggiorna in modo coordinato corpi, geometrie, frame articolari, marker e percorsi muscolari. La mappa usa direttamente le misure ANSUR disponibili per bacino, tronco, femori, tibie, piedi, braccia, avambracci e mani. Per assi o segmenti senza una misura ANSUR sufficientemente diretta viene usato il rapporto di statura come fallback deterministico.
 
@@ -573,7 +609,7 @@ screen_diagonale = Screen(inches=27.0, ratio="21:9")
 
 `center_x`/`center_y`/`center_z` posizionano il centro del pannello nel sistema di riferimento del ground (metri); `angle_deg` ne definisce l'inclinazione rispetto al ground: `0` disteso a terra, `90` (default) verticale, come un monitor appoggiato su un piano orizzontale.
 
-Ogni parametro del costruttore ha una property in lettura (`width_mm`, `height_mm`, `inches`, `ratio`, `center_x`, `center_y`, `center_z`, `angle_deg`, `mesh_dir`) e un setter dedicato (`set_width_mm`, `set_height_mm`, `set_inches`, `set_ratio`, `set_center_x`, `set_center_y`, `set_center_z`, `set_angle_deg`, `set_mesh_dir`). Ogni setter ricostruisce il corpo OpenSim, la mesh e il giunto verso ground con i parametri aggiornati:
+Ogni parametro del costruttore ha una property in lettura (`width_mm`, `height_mm`, `inches`, `ratio`, `center_x`, `center_y`, `center_z`, `angle_deg`, `mesh_dir`) e un setter dedicato (`set_width_mm`, `set_height_mm`, `set_inches`, `set_ratio`, `set_center_x`, `set_center_y`, `set_center_z`, `set_angle_deg`, `set_mesh_dir`). Ogni setter ricostruisce il corpo OpenSim, la mesh e il giunto verso ground con i parametri aggiornati. Il costruttore accetta anche `name` (default `None`, cioè `"screen_panel"`, anche impostabile dopo con `set_name`): sticky attraverso rebuild/`copy()` esattamente come per `Box` (vedi sotto), determina anche il nome del file mesh (`f"{name}.stl"`) così da non collidere con quello di un altro `Screen`/`Box` nella stessa `mesh_dir`:
 
 ```python
 screen.set_angle_deg(0)       # ora disteso sul piano orizzontale
@@ -605,9 +641,11 @@ box = Box(
 )
 ```
 
-A differenza di `Screen`, la massa è un dato diretto (`mass_kg`, non derivata da una densità di materiale); il tensore d'inerzia resta comunque quello analitico di un parallelepipedo omogeneo pieno con quella massa e quelle dimensioni. Ogni dimensione ha una property in lettura (`width`, `height`, `depth`, `mass_kg`) e un setter dedicato (`set_width`, `set_height`, `set_depth`, `set_mass_kg`) che ricostruisce corpo, mesh e giunto -- la mesh, generata con lo stesso writer STL usato internamente da `operators.add_box_body` (`opensim_models._primitives.write_box_mesh`), viene salvata in `box.stl` dentro `mesh_dir` e rigenerata a ogni cambio di dimensione. `width`/`height`/`depth`/`mass_kg` devono essere finiti e strettamente positivi, altrimenti il costruttore (o il setter) solleva `ValueError`.
+A differenza di `Screen`, la massa è un dato diretto (`mass_kg`, non derivata da una densità di materiale); il tensore d'inerzia resta comunque quello analitico di un parallelepipedo omogeneo pieno con quella massa e quelle dimensioni. Ogni dimensione ha una property in lettura (`width`, `height`, `depth`, `mass_kg`) e un setter dedicato (`set_width`, `set_height`, `set_depth`, `set_mass_kg`) che ricostruisce corpo, mesh e giunto -- la mesh, generata con lo stesso writer STL usato internamente da `operators.add_box_body` (`opensim_models._primitives.write_box_mesh`), viene salvata dentro `mesh_dir` e rigenerata a ogni cambio di dimensione. `width`/`height`/`depth`/`mass_kg` devono essere finiti e strettamente positivi, altrimenti il costruttore (o il setter) solleva `ValueError`.
 
-Come `Screen`, `Box` accetta `mesh_dir` al costruttore (property in lettura `mesh_dir`, setter dedicato `set_mesh_dir`): la cartella dove viene scritto `box.stl`, di default `components/assets/meshes/` dentro il package (creata automaticamente se mancante), sostituibile con un percorso qualunque -- vedi "Creare uno schermo (Screen)" sopra per i dettagli (stesso comportamento per entrambi i componenti).
+Il costruttore accetta anche `name` (default `None`, cioè `"box"`): il nome OpenSim del corpo, impostabile anche dopo con `set_name` -- a differenza di una rinomina generica, qui il nome resta "sticky" attraverso qualunque rebuild (un setter di dimensione/massa/posa, o `set_name` stesso) e attraverso `copy()`. Determina anche il nome del file mesh (`f"{name}.stl"`, quindi `box.stl` solo per il nome di default): due `Box` con `mesh_dir` condiviso ma `name` diversi scrivono due file distinti invece di sovrascriversi a vicenda -- importante non appena se ne creano più di uno nella stessa cartella (es. più parti di uno stesso attrezzo).
+
+Come `Screen`, `Box` accetta `mesh_dir` al costruttore (property in lettura `mesh_dir`, setter dedicato `set_mesh_dir`): la cartella dove viene scritta la mesh, di default `components/assets/meshes/` dentro il package (creata automaticamente se mancante), sostituibile con un percorso qualunque -- vedi "Creare uno schermo (Screen)" sopra per i dettagli (stesso comportamento per entrambi i componenti, incluso il parametro `name`).
 
 `origin`/`angle_deg` impostano la posa iniziale (un `WeldJoint` verso ground), e hanno anche loro un setter dedicato (`set_origin`, `set_angle_deg`, ciascuno dei due preserva l'altra metà della posa corrente): ma a differenza delle dimensioni, le property stesse vengono sempre lette direttamente dalla posa corrente del corpo, quindi riflettono comunque l'ultima cosa che lo ha spostato -- gli argomenti del costruttore, `set_origin`/`set_angle_deg`, un setter di dimensione (che preserva la posa corrente durante la ricostruzione), oppure `rotate()`/`translate()` -- tutti modi ugualmente validi per riposizionare un `Box` dopo la costruzione:
 
@@ -722,7 +760,7 @@ python -m pytest -q
 
 - `tests/test_model.py` copre `OpenSimModel` in modo esaustivo: caricamento (da file, vuoto, file mancante), sblocco delle coordinate, accessori nominati, gestione di coordinate (posizione, velocità)/marker/muscoli/massa dei corpi, `update_state()` (propagazione a quantità derivate, comportamento "grezzo" dei setter), `reinitialize()` (inclusa la coerenza di coordinate accoppiate da un `CoordinateCouplerConstraint`), `copy()` (indipendenza del modello copiato, preservazione di postura e di attributi delle sottoclassi), scaling, export (inclusa la copia delle mesh in `Geometry/`), cartelle di geometria, `rotate()`/`translate()` (corretta delega a `operators.rotate_object`/`translate_object`, inclusa la copia indipendente restituita con `inplace=False`) e l'intera composizione di modelli (`add_model`, `remove_model`, `__add__`, `__radd__`, rinomina automatica sulle collisioni, preservazione della postura degli operandi, controlli di tipo).
 - `tests/test_model_wrapper_signatures.py` verifica che ognuno dei 26 convenience method di `OpenSimModel` che delegano a `opensim_models.operators` (`add_body`, `add_weld_joint`, `attach_component`, ...) abbia esattamente la stessa firma (nomi, ordine, default) della funzione omonima in `operators` -- una rete di sicurezza contro il disallineamento fra le due, che altrimenti nessun test rileverebbe.
-- `tests/test_user.py` copre `User` in modo esaustivo: caricamento e validazione dei dati ANSUR (eseguibili anche senza OpenSim installato), risoluzione di percentile/altezza (inclusa l'estrapolazione PCHIP fuori range con `UserWarning`), scaling antropometrico, ogni singolo setter di postura e la relativa property di lettura, ogni centro articolare (confrontato con la posizione OpenSim nativa) e il dizionario `joint_centers`, le misure derivate geometricamente (lunghezze di coscia/gamba/braccio/avambraccio, altezza del tronco, larghezza spalle) e quelle lette direttamente da ANSUR (circonferenze, profondità, larghezze, inclusa la stima a sezione circolare di coscia/polpaccio), `com`/`cop`/`set_position`, e l'integrazione con la facade ereditata da `OpenSimModel`.
+- `tests/test_user.py` copre `User` in modo esaustivo: caricamento e validazione dei dati ANSUR (eseguibili anche senza OpenSim installato), risoluzione di percentile/altezza (inclusa l'estrapolazione PCHIP fuori range con `UserWarning`), scaling antropometrico, massa totale (default dal `weight_kg` ANSUR risolto, override esplicito con `mass_kg`, invarianza della geometria dei segmenti rispetto alla massa, fattore di `scaleMass` uniforme su ogni corpo, validazione, `copy()`, e la ricalibrazione post-costruzione con `set_mass_kg` inclusa la preservazione della postura), ogni singolo setter di postura e la relativa property di lettura, ogni centro articolare (confrontato con la posizione OpenSim nativa) e il dizionario `joint_centers`, le misure derivate geometricamente (lunghezze di coscia/gamba/braccio/avambraccio, altezza del tronco, larghezza spalle) e quelle lette direttamente da ANSUR (circonferenze, profondità, larghezze, inclusa la stima a sezione circolare di coscia/polpaccio), `com`/`cop`/`set_position`, e l'integrazione con la facade ereditata da `OpenSimModel`.
 - `tests/test_user_generated_code_is_fresh.py` verifica che `_posture_generated.py`/`_joint_centers_generated.py` corrispondano esattamente a quanto produrrebbe `scripts/generate_user_code.py` a partire dalle tabelle correnti, e che i due mixin espongano esattamente i nomi attesi dalle tabelle -- fallisce se una tabella viene modificata senza rigenerare i file.
 - `tests/test_screen.py` copre `Screen` in modo esaustivo: dimensionamento (esplicito, da diagonale, priorità e fallback tra i due), posa (`center_*`/`angle_deg`), struttura del modello (un corpo, un `WeldJoint`), rigenerazione della mesh sui setter e registrazione della cartella di geometria.
 - `tests/test_box.py` copre `Box` in modo esaustivo: massa/inerzia (default, esplicita, analitica per un parallelepipedo pieno) e relativa validazione (dimensioni/massa non positive), `origin`/`angle_deg`/`com` alla costruzione, `set_origin`/`set_angle_deg` (ciascuno preserva l'altra metà della posa), il fatto che `origin`/`angle_deg`/`corners` restino sempre coerenti con la posa corrente (anche dopo `rotate()`/`translate()` ereditati, e attraverso un setter di dimensione, che preserva la posa durante la ricostruzione), gli 8 spigoli (valori attesi e comportamento rigido sotto traslazione), struttura del modello (un corpo, un `WeldJoint`), indipendenza delle istanze, `copy()`, e rigenerazione della mesh sui setter.

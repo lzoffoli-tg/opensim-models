@@ -32,13 +32,22 @@ need no ``reinitialize=``/``structural_change()`` handling from the caller.
 are convenience methods for rotating/translating a whole model without
 importing this module directly.
 
+:func:`euclidean_distance` is a third, even simpler kind of operator: a
+pure geometry helper with no ``OpenSimModel`` involved at all, for
+measuring the straight-line distance between two plain ``(x, y, z)``
+points -- e.g. two values returned by
+:attr:`~opensim_models.components.Body.position_global`/
+:attr:`~opensim_models.components.Body.position_local` or the matching
+properties elsewhere in :mod:`opensim_models.components`.
+
 Organized one file per component category (``bodies``, ``joints``,
 ``attachment``, ``primitives``, ``forces``, ``markers``, ``constraints``,
 ``auxiliary`` for controllers/contact-geometry/probes, ``contact`` for the
 real, force-based ``add_sliding_point_contact``) plus ``rotation``/
-``translation`` and their shared ``_spatial`` helpers -- this module just
-re-exports every public name from all of them, so ``opensim_models.operators.<name>``
-resolves exactly as it did when this was a single flat file.
+``translation`` and their shared ``_spatial`` helpers, and ``geometry`` for
+``euclidean_distance`` -- this module just re-exports every public name
+from all of them, so ``opensim_models.operators.<name>`` resolves exactly
+as it did when this was a single flat file.
 """
 
 from __future__ import annotations
@@ -79,6 +88,7 @@ from .auxiliary import (
 from .contact import add_sliding_point_contact
 from .rotation import rotate_object
 from .translation import translate_object
+from .geometry import euclidean_distance
 
 __all__ = [
     "add_component",
@@ -117,4 +127,5 @@ __all__ = [
     "add_sliding_point_contact",
     "rotate_object",
     "translate_object",
+    "euclidean_distance",
 ]

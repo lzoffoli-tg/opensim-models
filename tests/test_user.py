@@ -209,7 +209,7 @@ def test_explicit_percentile_is_honored():
 
 @requires_opensim
 def test_explicit_height_resolves_its_empirical_percentile():
-    user = make_user(gender="M", height=175.0)
+    user = make_user(gender="M", height_cm=175.0)
     reference = resolve_reference("M", height=175.0, dataset=DATASET)
 
     assert user.percentile == pytest.approx(reference.percentile)
@@ -251,6 +251,119 @@ def test_copy_preserves_type_and_anthropometry_without_a_user_override():
     assert duplicate.percentile == 75.0
     assert duplicate.coordinate("knee_angle_l").value_degrees == pytest.approx(90.0)
     assert duplicate.model is not user.model
+
+
+# ---------------------------------------------------------------------------
+# Total body mass (mass_kg)
+# ---------------------------------------------------------------------------
+
+
+@requires_opensim
+def test_default_mass_matches_the_resolved_ansur_weight_kg():
+    user = make_user(gender="M", height_cm=180.0)
+    reference = resolve_reference("M", height=180.0, dataset=DATASET)
+
+    assert user.mass_kg == pytest.approx(reference.values["weight_kg"])
+    assert user.model.getTotalMass(user.state) == pytest.approx(user.mass_kg)
+
+
+@requires_opensim
+def test_explicit_mass_kg_overrides_the_ansur_default():
+    default_user = make_user(gender="M", height_cm=180.0)
+    heavy_user = make_user(gender="M", height_cm=180.0, mass_kg=120.0)
+
+    # The requested mass must actually differ from what height alone would
+    # have produced, otherwise this test would not exercise the override.
+    assert default_user.mass_kg != pytest.approx(120.0)
+    assert heavy_user.mass_kg == pytest.approx(120.0)
+    assert heavy_user.model.getTotalMass(heavy_user.state) == pytest.approx(120.0)
+
+
+@requires_opensim
+def test_mass_kg_does_not_affect_geometric_scaling():
+    # mass_kg must only rescale mass/inertia (opensim.Body.scaleMass), never
+    # the geometric, height-driven per-body scale factors.
+    default_user = make_user(gender="M", height_cm=180.0)
+    heavy_user = make_user(gender="M", height_cm=180.0, mass_kg=200.0)
+    light_user = make_user(gender="M", height_cm=180.0, mass_kg=50.0)
+
+    assert heavy_user.right_thigh_length == pytest.approx(default_user.right_thigh_length)
+    assert light_user.right_thigh_length == pytest.approx(default_user.right_thigh_length)
+    assert heavy_user.left_hip == pytest.approx(default_user.left_hip)
+    assert light_user.left_hip == pytest.approx(default_user.left_hip)
+
+
+@requires_opensim
+def test_mass_kg_rescales_every_body_mass_by_the_same_factor():
+    default_user = make_user(gender="M", height_cm=180.0)
+    heavy_user = make_user(gender="M", height_cm=180.0, mass_kg=200.0)
+    expected_factor = 200.0 / default_user.mass_kg
+
+    for name in default_user.bodies:
+        ratio = heavy_user.body(name).mass / default_user.body(name).mass
+        assert ratio == pytest.approx(expected_factor)
+
+
+@pytest.mark.parametrize("mass_kg", [0.0, -10.0, float("inf"), float("nan")])
+@requires_opensim
+def test_mass_kg_rejects_non_positive_or_non_finite_values(mass_kg):
+    with pytest.raises(ValueError, match="mass_kg"):
+        make_user(gender="M", mass_kg=mass_kg)
+
+
+@requires_opensim
+def test_copy_preserves_mass_kg():
+    user = make_user(gender="M", height_cm=180.0, mass_kg=95.0)
+
+    duplicate = user.copy()
+
+    assert duplicate.mass_kg == pytest.approx(95.0)
+    assert duplicate.model.getTotalMass(duplicate.state) == pytest.approx(95.0)
+
+
+@requires_opensim
+def test_set_mass_kg_recalibrates_an_already_built_user():
+    user = make_user(gender="M", height_cm=180.0)
+
+    user.set_mass_kg(130.0)
+
+    assert user.mass_kg == pytest.approx(130.0)
+    assert user.model.getTotalMass(user.state) == pytest.approx(130.0)
+
+
+@requires_opensim
+def test_set_mass_kg_is_idempotent_and_works_from_either_starting_point():
+    default_user = make_user(gender="M", height_cm=180.0)
+    explicit_user = make_user(gender="M", height_cm=180.0, mass_kg=200.0)
+
+    default_user.set_mass_kg(75.0)
+    explicit_user.set_mass_kg(75.0)
+
+    assert default_user.mass_kg == pytest.approx(75.0)
+    assert explicit_user.mass_kg == pytest.approx(75.0)
+    assert default_user.model.getTotalMass(default_user.state) == pytest.approx(75.0)
+    assert explicit_user.model.getTotalMass(explicit_user.state) == pytest.approx(75.0)
+
+
+@requires_opensim
+def test_set_mass_kg_preserves_posture():
+    user = make_user(gender="M", height_cm=180.0)
+    user.set_left_knee_flexionextension(33.0)
+    user.update_state()
+
+    user.set_mass_kg(80.0)
+
+    assert user.left_knee_flexionextension == pytest.approx(33.0)
+    assert user.mass_kg == pytest.approx(80.0)
+
+
+@pytest.mark.parametrize("mass_kg", [0.0, -10.0, float("inf"), float("nan")])
+@requires_opensim
+def test_set_mass_kg_rejects_non_positive_or_non_finite_values(mass_kg):
+    user = make_user(gender="M", height_cm=180.0)
+
+    with pytest.raises(ValueError, match="mass_kg"):
+        user.set_mass_kg(mass_kg)
 
 
 # ---------------------------------------------------------------------------
@@ -529,7 +642,7 @@ def test_set_position_rejects_non_finite_target():
 @requires_opensim
 def test_out_of_range_height_user_builds_with_positive_derived_measurements():
     with pytest.warns(UserWarning, match="outside ANSUR range"):
-        user = make_user(gender="F", height=210.0)
+        user = make_user(gender="F", height_cm=210.0)
 
     for name in (
         "left_thigh_circumference",
