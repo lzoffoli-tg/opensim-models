@@ -1,10 +1,10 @@
 """opensim_models.operators used to be a single flat module; it is now a
 package (operators/__init__.py re-exporting from bodies.py, joints.py,
 attachment.py, primitives.py, forces.py, markers.py, constraints.py,
-auxiliary.py, rotation.py, translation.py, with shared helpers in _shared.py/
-_spatial.py). This test guards the one thing that split must never change:
-opensim_models.operators.<name> (and opensim_models.operators.__all__)
-resolving exactly as before.
+auxiliary.py, rotation.py, translation.py, geometry.py, solving.py, with
+shared helpers in _shared.py/_spatial.py). This test guards the one thing
+that split must never change: opensim_models.operators.<name> (and
+opensim_models.operators.__all__) resolving exactly as before.
 """
 
 import sys
@@ -58,6 +58,8 @@ EXPECTED_ALL = [
     "euclidean_distance",
     "from_global_to_local",
     "from_local_to_global",
+    "solve_coordinates",
+    "solve_point_coincidence",
 ]
 
 

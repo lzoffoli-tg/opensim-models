@@ -56,8 +56,11 @@ Organized one file per component category (``bodies``, ``joints``,
 ``contact`` for the named contact-geometry builders (``add_contact_sphere``/
 ``add_contact_half_space``/``add_contact_mesh``) and the real, force-based
 ``add_sliding_point_contact``) plus ``rotation``/``translation`` and their
-shared ``_spatial`` helpers, and ``geometry`` for ``euclidean_distance``/
-``from_global_to_local``/``from_local_to_global`` --
+shared ``_spatial`` helpers, ``geometry`` for ``euclidean_distance``/
+``from_global_to_local``/``from_local_to_global``, and ``solving`` for
+``solve_coordinates``/``solve_point_coincidence`` (a crash-safe,
+``scipy.optimize.least_squares``-based alternative to OpenSim's native
+``Model.assemble()`` -- see that module's own docstring) --
 this module just re-exports every public name from all of them, so
 ``opensim_models.operators.<name>`` resolves exactly as it did when this
 was a single flat file.
@@ -108,6 +111,7 @@ from .contact import (
 from .rotation import rotate_object
 from .translation import translate_object
 from .geometry import euclidean_distance, from_global_to_local, from_local_to_global
+from .solving import solve_coordinates, solve_point_coincidence
 
 __all__ = [
     "add_component",
@@ -153,4 +157,6 @@ __all__ = [
     "euclidean_distance",
     "from_global_to_local",
     "from_local_to_global",
+    "solve_coordinates",
+    "solve_point_coincidence",
 ]

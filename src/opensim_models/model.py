@@ -5,7 +5,7 @@ import os
 import shutil
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Sequence
 
 import numpy as np
 
@@ -1247,6 +1247,217 @@ class OpenSimModel:
         from .operators import translate_object
 
         return translate_object(self, direction, inplace=inplace)
+
+    def solve_coordinates(
+        self,
+        residual_fn: Callable[[np.ndarray], Any],
+        coordinate_names: Sequence[Any],
+        x0: Sequence[float] | None = None,
+        *,
+        raise_on_failure: bool = True,
+        **least_squares_kwargs: Any,
+    ) -> Any:
+        """Solve for coordinate values that drive ``residual_fn`` to zero.
+
+        A thin convenience wrapper equivalent to
+        ``operators.solve_coordinates(self, residual_fn, coordinate_names,
+        x0, raise_on_failure=raise_on_failure, **least_squares_kwargs)``
+        (imported locally to avoid a circular import, since
+        :mod:`opensim_models.operators` itself imports from this module).
+        This is the crash-safe, ``scipy.optimize.least_squares``-based
+        replacement this package provides for whatever kinematic condition
+        would otherwise be handed to OpenSim's native ``Model.assemble()`` --
+        confirmed, by direct minimal repro, to segfault this package's
+        models (not a catchable exception) whenever an unsatisfied
+        constraint actually needs solving; see
+        :mod:`opensim_models.operators.solving`'s module docstring for the
+        full rationale. On every trial it sets ``coordinate_names`` to a
+        candidate value via ``Coordinate.setValue(state, value,
+        enforce_constraints=False)`` (confirmed always safe -- never calls
+        the native assembler) and realizes ``self.state`` through
+        ``Stage::Position`` (also confirmed always safe) before calling
+        ``residual_fn``, so a failure here is always an ordinary scipy
+        non-convergence, never a process crash.
+
+        For the single most common recurring case -- making one or more
+        pairs of points coincide -- :meth:`solve_point_coincidence` is a
+        more ergonomic wrapper built on top of this method.
+
+        Parameters
+        ----------
+        residual_fn : callable
+            Called as ``residual_fn(x)`` with this model's coordinates
+            already set to the trial values ``x`` (in the order of
+            ``coordinate_names``) and ``self.state`` already realized
+            through ``Stage::Position`` -- safe to read
+            ``position_global``/``position_local``/joint-centre
+            properties/``euclidean_distance`` immediately, with no further
+            realization needed. Must return an array-like of residuals
+            (need not have the same length as ``coordinate_names`` --
+            ``least_squares`` only requires at least as many residuals as
+            unknowns); should return ~0 at the desired solution.
+        coordinate_names : sequence of str or components.Coordinate
+            The free coordinates to solve for, by exact OpenSim name or as
+            already-looked-up :class:`~opensim_models.components.Coordinate`
+            wrappers (mixing both in the same sequence is fine). Driven in
+            each coordinate's own native unit (radians for a rotational
+            coordinate, metres for a translational one) -- convert
+            explicitly in ``residual_fn``/when interpreting ``x`` if you
+            need degrees.
+        x0 : sequence of float or None, optional
+            Initial guess, one value per entry in ``coordinate_names``, in
+            each coordinate's native unit. When ``None`` (default), starts
+            from each coordinate's current value on ``self.state`` -- a
+            reasonable default whenever the model is already roughly posed,
+            but a condition far from the current posture (or with multiple
+            solutions) may need an explicit, closer ``x0`` to converge to
+            the intended one.
+        raise_on_failure : bool, optional
+            When ``True`` (default), raise ``RuntimeError`` if
+            ``scipy.optimize.least_squares`` reports ``success=False`` (its
+            own convergence criterion -- see its ``status``/``message``),
+            after still leaving this model's coordinates at the best ``x``
+            found. When ``False``, never raises for non-convergence --
+            inspect the returned ``OptimizeResult``'s own
+            ``success``/``status``/``message``/``cost`` instead.
+        **least_squares_kwargs
+            Forwarded to ``scipy.optimize.least_squares`` (e.g. ``bounds``,
+            ``method``, ``xtol``, ``max_nfev``) -- see its own
+            documentation.
+
+        Returns
+        -------
+        scipy.optimize.OptimizeResult
+            The result object from ``scipy.optimize.least_squares``,
+            unchanged (``x``, ``fun``, ``cost``, ``success``, ``status``,
+            ``message``, ...).
+
+        Raises
+        ------
+        ValueError
+            If ``coordinate_names`` is empty, or ``x0`` is given but its
+            length does not match ``coordinate_names``.
+        RuntimeError
+            If ``raise_on_failure=True`` (default) and
+            ``scipy.optimize.least_squares`` does not converge. Carries the
+            same ``status``/``message`` scipy itself reports, plus the best
+            ``x`` found -- a plain, catchable Python exception, never a
+            process crash.
+        """
+        from .operators import solve_coordinates
+
+        return solve_coordinates(
+            self,
+            residual_fn,
+            coordinate_names,
+            x0,
+            raise_on_failure=raise_on_failure,
+            **least_squares_kwargs,
+        )
+
+    def solve_point_coincidence(
+        self,
+        point_pairs: Sequence[tuple],
+        coordinate_names: Sequence[Any],
+        x0: Sequence[float] | None = None,
+        *,
+        raise_on_failure: bool = True,
+        **least_squares_kwargs: Any,
+    ) -> Any:
+        """Solve for coordinate values that make each point pair coincide.
+
+        A thin convenience wrapper equivalent to
+        ``operators.solve_point_coincidence(self, point_pairs,
+        coordinate_names, x0, raise_on_failure=raise_on_failure,
+        **least_squares_kwargs)`` (imported locally to avoid a circular
+        import, since :mod:`opensim_models.operators` itself imports from
+        this module), built on top of :meth:`solve_coordinates` for the
+        single most common recurring rigid-attachment shape in this kind of
+        ergonomics study: a body-fixed landmark (a shoulder/acromion point,
+        a heel, a pelvis/torso point) that must land on, or coincide with, a
+        point fixed on a piece of equipment (a pad, a backrest, a footrest)
+        -- without welding the two together via a native constraint (see
+        :func:`~opensim_models.operators.add_point_on_plane_constraint`'s
+        own docstring for why an *unsatisfied* constraint of that kind is
+        itself a native-crash risk at ``initSystem()`` time; this method
+        sidesteps the whole category by never constructing a constraint at
+        all). Internally builds the residual as the concatenation of
+        ``(point_a - point_b)`` for every pair, in order, then calls
+        :meth:`solve_coordinates` -- see that method's docstring for the
+        crash-safety guarantee (``Coordinate.setValue(...,
+        enforce_constraints=False)`` plus ``realizePosition``, never
+        ``Model.assemble()``).
+
+        Parameters
+        ----------
+        point_pairs : sequence of tuple
+            One entry per pair of points that should coincide. Each entry
+            is either:
+
+            - ``(getter_a, getter_b)``: two zero-argument callables, each
+              returning a ground-frame ``(x, y, z)`` point when called --
+              e.g. ``lambda: user.right_shoulder`` or ``lambda:
+              footrest.markers["contact"].position_global``. Use this form
+              for anything not expressible as a fixed local point on a
+              body/frame (a joint centre, a derived/projected point, a
+              marker already giving a ground-frame position directly).
+            - ``(frame_a, point_a, frame_b, point_b)``: ``frame_a``/
+              ``frame_b`` are a :mod:`opensim_models.components` wrapper or
+              raw ``opensim`` object with a resolvable ground-frame pose (a
+              ``Body``, ``Box``, ``OffsetFrame``, ...; the same objects
+              :func:`~opensim_models.operators.from_local_to_global`
+              accepts), and ``point_a``/``point_b`` are ``(x, y, z)`` points
+              in that frame's own local axes (metres) -- e.g. a shoulder
+              pad's contact point, or a footrest's heel-contact point,
+              expressed once in that body's own frame and re-evaluated at
+              its current pose on every trial.
+
+            Both forms can be mixed freely across different entries of the
+            same call.
+        coordinate_names : sequence of str or components.Coordinate
+            The free coordinates to solve for -- see :meth:`solve_coordinates`.
+        x0 : sequence of float or None, optional
+            Initial guess, one value per entry in ``coordinate_names`` --
+            see :meth:`solve_coordinates`.
+        raise_on_failure : bool, optional
+            When ``True`` (default), raise ``RuntimeError`` on non-
+            convergence instead of returning a ``success=False`` result --
+            see :meth:`solve_coordinates`.
+        **least_squares_kwargs
+            Forwarded to :meth:`solve_coordinates` (and from there to
+            ``scipy.optimize.least_squares``).
+
+        Returns
+        -------
+        scipy.optimize.OptimizeResult
+            The result object from ``scipy.optimize.least_squares``,
+            unchanged (``x``, ``fun``, ``cost``, ``success``, ``status``,
+            ``message``, ...).
+
+        Raises
+        ------
+        ValueError
+            If ``point_pairs`` or ``coordinate_names`` is empty, if any
+            entry of ``point_pairs`` has neither 2 nor 4 elements, or if
+            ``x0`` is given with the wrong length.
+        TypeError
+            If a 2-element ``point_pairs`` entry's two elements are not both
+            callable.
+        RuntimeError
+            If ``raise_on_failure=True`` (default) and the solve does not
+            converge -- a plain, catchable Python exception, never a
+            process crash.
+        """
+        from .operators import solve_point_coincidence
+
+        return solve_point_coincidence(
+            self,
+            point_pairs,
+            coordinate_names,
+            x0,
+            raise_on_failure=raise_on_failure,
+            **least_squares_kwargs,
+        )
 
     def scale_bodies(self, factors: dict[str, tuple[float, float, float]]) -> None:
         """Scale one or more bodies through OpenSim's native ScaleSet pipeline.
