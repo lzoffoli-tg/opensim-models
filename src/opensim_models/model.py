@@ -575,6 +575,79 @@ class OpenSimModel:
         }
 
     @property
+    def frames(self) -> dict[str, "components.Frame"]:
+        """Return every standalone attachment frame currently in the model.
+
+        There is no native ``FrameSet`` the way there is a ``BodySet``/
+        ``JointSet``/...; the only entry point is ``opensim.Model.getFrameList()``,
+        which returns *every* ``Frame``-typed component anywhere in the
+        model's ownership tree. Confirmed empirically (a hand-built body
+        plus one :func:`~opensim_models.operators.add_offset_frame` call,
+        and the bundled Rajagopal-based ``User`` model) that this heavily
+        overlaps with components already exposed elsewhere: ``opensim.Body``
+        and ``opensim.Ground`` are themselves ``Frame`` subtypes (already
+        covered by :attr:`bodies`/:attr:`ground`), and every joint built by
+        this package's ``add_*_joint`` helpers (or loaded from the bundled
+        base model) owns two more -- its own parent/child
+        ``PhysicalOffsetFrame``\\ s, already reachable via
+        :attr:`~opensim_models.components.Joint.parent_frame`/
+        :attr:`~opensim_models.components.Joint.child_frame` -- as does an
+        ``opensim.WeldConstraint`` for its own two attachment frames
+        (:attr:`~opensim_models.components.WeldConstraint.frame1`/
+        :attr:`~opensim_models.components.WeldConstraint.frame2`). On the
+        bundled ``User`` model (22 bodies, 22 joints), ``getFrameList()``
+        returns 67 entries and *every single one* falls into one of those
+        three already-covered buckets.
+
+        So that this property behaves like :attr:`bodies`/:attr:`muscles`
+        -- a genuinely new, mostly non-overlapping category, empty until
+        you deliberately add something to it -- rather than a redundant
+        re-listing of bodies/joints/constraints under another name, a
+        result is excluded when it is a ``Body``/``Ground``, or when its
+        immediate owner (``getOwner()``) is an ``opensim.Joint`` or
+        ``opensim.Constraint``. What remains is a standalone frame
+        attached directly to a body/ground (or, in one internal case, to
+        the model root: the unnamed "ground anchor" :meth:`add_model`
+        creates when merging in a model that has a joint attached
+        directly to ground) -- in practice, built via
+        :meth:`add_offset_frame`/:func:`~opensim_models.operators.add_offset_frame`.
+
+        No dedicated ``frame(name)`` lookup method exists alongside this
+        property (unlike :meth:`body`/:meth:`joint`/...): use
+        ``model.frames[name]`` instead.
+
+        Returns
+        -------
+        dict[str, components.Frame]
+            Maps each standalone frame's OpenSim name to the most specific
+            wrapper available for its concrete type --
+            :class:`~opensim_models.components.OffsetFrame` for every case
+            confirmed so far (every standalone frame observed is a
+            ``PhysicalOffsetFrame``), or the thin, generic
+            :class:`~opensim_models.components.Frame` for anything else --
+            see :func:`~opensim_models.components._wrap_frame`. Rebuilt
+            fresh on every access; empty on a model with no standalone
+            frames (true of the bundled ``User`` model, and of any model
+            before :meth:`add_offset_frame` is first called).
+        """
+        from . import components
+
+        opensim = self.opensim
+        result: dict[str, components.Frame] = {}
+        for item in self.model.getFrameList():
+            if opensim.Body.safeDownCast(item) is not None:
+                continue
+            if opensim.Ground.safeDownCast(item) is not None:
+                continue
+            owner = item.getOwner()
+            if opensim.Joint.safeDownCast(owner) is not None:
+                continue
+            if opensim.Constraint.safeDownCast(owner) is not None:
+                continue
+            result[item.getName()] = components._wrap_frame(self, item)
+        return result
+
+    @property
     def forces(self) -> dict[str, "components.Force"]:
         """Return every force/actuator currently in the model, including muscles.
 

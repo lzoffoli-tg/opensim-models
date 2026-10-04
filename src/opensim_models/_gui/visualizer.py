@@ -76,6 +76,15 @@ DEFAULT_SIZE = (900, 700)
 _GROUND_HALF_SIZE = 5.0  # metres
 _GROUND_RESOLUTION = 10  # grid divisions per side
 
+# Ground-frame origin triad (X/Y/Z axes, at the same (0, 0, 0) point the
+# ground plane is centred on). Half the ground plane's half-size would
+# still read as "the whole floor's scale reference"; a short arm length
+# instead reads as "which way is which axis" without competing with the
+# model itself for visual weight on a human-scale (~1-2 m) model -- same
+# sizing rationale as the ground plane above, just one order of magnitude
+# smaller since this marks a point, not an extent.
+_AXES_LENGTH = 0.5  # metres, per arm
+
 # Muscle path lines and marker spheres, in the same (0.75, 0.76, 0.8)-grey
 # world as body geometry -- saturated colours so both stay readable against
 # bone-coloured actors and each other.
@@ -248,6 +257,12 @@ class VTKVisualizer:
         self._renderer.ResetCamera()
         self._ground_actor = self._build_ground_actor()
         self._renderer.AddActor(self._ground_actor)
+        # same ordering reasoning as the ground plane just above: added
+        # after ResetCamera so its triad never factors into the initial
+        # fit (immaterial at this actor's size, but kept consistent with
+        # the ground plane's own placement rather than relying on that).
+        self._axes_actor = self._build_axes_actor()
+        self._renderer.AddActor(self._axes_actor)
         self._render_window.Render()
 
     def _window_title(self) -> str:
@@ -290,6 +305,46 @@ class VTKVisualizer:
     def get_ground_visible(self) -> bool:
         """Return whether the ground reference plane is currently shown."""
         return bool(self._ground_actor.GetVisibility())
+
+    def _build_axes_actor(self) -> Any:
+        """Build the ground-frame origin axes triad actor (see ``_AXES_LENGTH``).
+
+        Uses VTK's own ``vtkAxesActor`` rather than three hand-built
+        ``vtkArrowSource`` actors: it is the idiomatic VTK way to draw
+        exactly this (a labelled XYZ triad at a frame's origin), and its
+        defaults already match the convention this triad is meant to
+        communicate -- X/Y/Z shafts coloured red/green/blue, with
+        matching "X"/"Y"/"Z" text captions at each tip (confirmed
+        directly; unlike the plain, unlabelled ground plane, labelling
+        here is the point -- a bare set of lines without colour/text
+        cues would not actually tell which axis is which). ``vtkAxesActor``
+        is a ``vtkProp3D`` rather than a ``vtkActor``, but exposes the
+        same ``SetVisibility``/``GetVisibility`` pair (confirmed
+        directly) and is accepted by ``vtkRenderer.AddActor`` the same
+        way, so it slots into this module's existing per-layer pattern
+        without any special-casing.
+        """
+        axes = self._vtk.vtkAxesActor()
+        axes.SetTotalLength(_AXES_LENGTH, _AXES_LENGTH, _AXES_LENGTH)
+        return axes
+
+    def set_axes_visible(self, visible: bool) -> None:
+        """Show or hide the ground-frame origin axes triad, and redraw.
+
+        Backed by ``vtkProp3D.SetVisibility`` (the same mechanism
+        :meth:`set_ground_visible` uses on its ``vtkActor``): when
+        hidden, the triad is skipped entirely by the renderer -- not
+        drawn, not in the depth buffer -- so this controls the same
+        thing whether what is looking at the render is a human watching
+        the live window or something reading pixels back from it (e.g. a
+        future screenshot/video export).
+        """
+        self._axes_actor.SetVisibility(bool(visible))
+        self._render_window.Render()
+
+    def get_axes_visible(self) -> bool:
+        """Return whether the ground-frame origin axes triad is currently shown."""
+        return bool(self._axes_actor.GetVisibility())
 
     def _model_display_name(self) -> str:
         return self._model.model.getName() or type(self._model).__name__
@@ -409,8 +464,8 @@ class VTKVisualizer:
         same regardless of what posture/zoom the camera was at before), but
         does not change what is visible/hidden -- toggle
         :meth:`set_ground_visible`/:meth:`set_muscles_visible`/
-        :meth:`set_markers_visible` first if those should be excluded from
-        the framing.
+        :meth:`set_markers_visible`/:meth:`set_axes_visible` first if those
+        should be excluded from the framing.
 
         Raises
         ------

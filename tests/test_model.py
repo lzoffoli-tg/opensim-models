@@ -51,6 +51,7 @@ def test_blank_model_has_no_components():
     assert len(model.muscles) == 0
     assert len(model.markers) == 0
     assert len(model.coordinates) == 0
+    assert len(model.frames) == 0
     assert model.state is not None
 
 
@@ -61,6 +62,12 @@ def test_model_loaded_from_file_exposes_expected_components():
     assert len(model.joints) == 22
     assert len(model.muscles) == 80
     assert len(model.markers) == 66
+    # The bundled base model has no standalone offset frame of its own --
+    # every PhysicalOffsetFrame it contains is a joint's own parent/child
+    # frame, already excluded by .frames (see test_operators.py's
+    # test_model_frames_excludes_bodies_ground_and_a_joints_own_offset_frames
+    # for why), even though getFrameList() itself is far from empty here.
+    assert len(model.frames) == 0
 
 
 def test_missing_model_file_raises():

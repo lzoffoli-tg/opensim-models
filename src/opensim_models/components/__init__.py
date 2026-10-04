@@ -13,13 +13,13 @@ consistently-named set of properties/``set_x()`` method pairs (never an
 This wraps the categories :class:`~opensim_models.model.OpenSimModel`
 already directly touches -- the 8 ``_MERGE_SETS`` categories (body, joint,
 force, marker, constraint, controller, contact geometry, probe) plus
-coordinate -- not OpenSim's entire ~800-class surface. ``Force``/
-``Constraint``/``Controller``/``ContactGeometry``/``Probe`` are thin,
-intentionally minimal wrappers for now (OpenSim has many concrete subtypes
-of each, with very different APIs); the pattern here -- a
-:class:`_ComponentWrapper` subclass plus property/``set_x()`` pairs -- is
-meant to be extended the same way later for any subtype that needs its
-own dedicated properties.
+coordinate and (standalone) frame -- not OpenSim's entire ~800-class
+surface. ``Force``/``Constraint``/``Controller``/``ContactGeometry``/
+``Probe``/``Frame`` are thin, intentionally minimal wrappers for now
+(OpenSim has many concrete subtypes of each, with very different APIs);
+the pattern here -- a :class:`_ComponentWrapper` subclass plus
+property/``set_x()`` pairs -- is meant to be extended the same way later
+for any subtype that needs its own dedicated properties.
 
 Every wrapper's :attr:`~_ComponentWrapper.raw` is the escape hatch back to
 the underlying ``opensim`` object, for anything not (yet) wrapped here.
@@ -39,6 +39,7 @@ __all__ = [
     "Marker",
     "Muscle",
     "Joint",
+    "Frame",
     "OffsetFrame",
     "Force",
     "ExponentialContactForce",
@@ -872,8 +873,44 @@ class Joint(_ComponentWrapper):
         )
 
 
-class OffsetFrame(_ComponentWrapper):
+class Frame(_ComponentWrapper):
+    """Python-friendly wrapper around an ``opensim.Frame``.
+
+    A thin, intentionally minimal wrapper for now -- see the module
+    docstring for why (OpenSim has several concrete ``Frame`` subtypes,
+    each with its own API). Provides only the base
+    :class:`_ComponentWrapper` surface:
+    :attr:`~_ComponentWrapper.name`/:meth:`~_ComponentWrapper.set_name`,
+    equality/hashing by underlying identity, and :attr:`~_ComponentWrapper.raw`
+    as the escape hatch to the underlying ``opensim.Frame`` object for
+    anything not wrapped here.
+
+    ``opensim.Body`` and ``opensim.Ground`` are themselves ``Frame``
+    subtypes too, but are never wrapped as a plain :class:`Frame` (or
+    reached through it) -- see
+    :attr:`~opensim_models.model.OpenSimModel.frames` for the full
+    reasoning; in short, those two (and a joint's or ``WeldConstraint``'s
+    own attachment frames) are already reachable through their own
+    dedicated accessors, so that property excludes them rather than
+    re-exposing them under a second name. See :class:`OffsetFrame` for
+    the one concrete subtype with a dedicated wrapper so far (see
+    :func:`_wrap_frame`) -- in practice, confirmed empirically, every
+    frame :attr:`~opensim_models.model.OpenSimModel.frames` actually
+    returns comes back as an :class:`OffsetFrame`, never this generic
+    fallback; it exists purely for a currently-unobserved standalone
+    ``Frame`` subtype that is neither a ``Body``/``Ground`` nor a
+    ``PhysicalOffsetFrame``.
+    """
+
+
+class OffsetFrame(Frame):
     """Python-friendly wrapper around an ``opensim.PhysicalOffsetFrame``.
+
+    Also reachable, filtered to just the standalone cases, via
+    :attr:`~opensim_models.model.OpenSimModel.frames` (see
+    :func:`_wrap_frame`) -- in addition to the uses already documented
+    below (a joint's own parent/child frame, a ``WeldConstraint``'s own
+    attachment frames).
 
     A ``PhysicalOffsetFrame`` is the small, usually-unnamed frame every
     ``add_*_joint`` (:func:`~opensim_models.operators.add_weld_joint`, etc.)
@@ -1075,6 +1112,38 @@ def _wrap_force(owner: "OpenSimModel", raw: Any) -> "Force":
     if contact_force is not None:
         return ExponentialContactForce(owner, contact_force)
     return Force(owner, raw)
+
+
+def _wrap_frame(owner: "OpenSimModel", raw: Any) -> "Frame":
+    """Wrap ``raw`` (an ``opensim.Frame``) in the most specific wrapper available.
+
+    Tries :class:`OffsetFrame` via ``safeDownCast``, falling back to the
+    thin, generic :class:`Frame` for anything else -- same dispatch shape
+    as :func:`_wrap_constraint`/:func:`_wrap_force`. Used by
+    :attr:`~opensim_models.model.OpenSimModel.frames`, after that
+    property has already filtered ``raw`` down to a standalone frame (not
+    a ``Body``/``Ground``, not a joint's or constraint's own attachment
+    frame) -- :class:`OffsetFrame` is, confirmed empirically, the concrete
+    type of every single result that filtering lets through in practice
+    (there is no other common standalone ``Frame`` subtype that this
+    package, or plain model-building code, constructs), so the
+    :class:`Frame` branch here is an (currently unobserved) safety net,
+    not a normal code path.
+
+    Unlike :func:`_wrap_constraint`/:func:`_wrap_force` (where
+    ``safeDownCast`` on the result fetched back from a native ``Set`` is
+    required -- see that function's docstring), ``raw`` here is already
+    confirmed to come back correctly, concretely typed directly from
+    ``opensim.Model.getFrameList()`` (``isinstance``/``safeDownCast``
+    against it already succeed with no prior cast needed); ``safeDownCast``
+    is kept anyway, for the same uniform, defensive shape every other
+    ``_wrap_*`` helper in this module follows.
+    """
+    opensim = owner.opensim
+    offset = opensim.PhysicalOffsetFrame.safeDownCast(raw)
+    if offset is not None:
+        return OffsetFrame(owner, offset)
+    return Frame(owner, raw)
 
 
 def _wrap_base_frame(owner: "OpenSimModel", frame: Any) -> Any:

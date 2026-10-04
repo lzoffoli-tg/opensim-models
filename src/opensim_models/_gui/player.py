@@ -9,7 +9,7 @@ window embedding the (VTK-based, see :mod:`opensim_models._gui.visualizer`)
   ``show(motion=...)`` -- disabled whenever no motion is loaded, rather
   than the controls disappearing, so there is always somewhere to look
   for them.
-- View (ground/muscles/markers visibility toggles, and a preset-camera
+- View (ground/muscles/markers/axes visibility toggles, and a preset-camera
   dropdown) -- unlike the playback controls, never disabled, since these
   act on the 3D view itself rather than a loaded motion.
 - Export (save the current view as a PNG, or a loaded motion as an MP4 --
@@ -580,6 +580,16 @@ def start_player(
             view_group, text="Markers", variable=markers_var, command=do_toggle_markers,
         )
         markers_check.grid(row=0, column=2, padx=2, sticky="w")
+
+        axes_var = tk.BooleanVar(value=True)
+
+        def do_toggle_axes() -> None:
+            model.visualizer.set_axes_visible(axes_var.get())
+
+        axes_check = ttk.Checkbutton(
+            view_group, text="Axes", variable=axes_var, command=do_toggle_axes,
+        )
+        axes_check.grid(row=0, column=3, padx=2, sticky="w")
 
         def do_set_view(event: Any = None) -> None:
             model.visualizer.set_view(view_var.get().lower())

@@ -56,6 +56,8 @@ EXPECTED_ALL = [
     "rotate_object",
     "translate_object",
     "euclidean_distance",
+    "from_global_to_local",
+    "from_local_to_global",
 ]
 
 

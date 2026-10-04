@@ -40,6 +40,15 @@ points -- e.g. two values returned by
 :attr:`~opensim_models.components.Body.position_local` or the matching
 properties elsewhere in :mod:`opensim_models.components`.
 
+:func:`from_global_to_local`/:func:`from_local_to_global` are a fourth
+kind: unlike :func:`euclidean_distance` they do read an object's current
+pose (so they are not pure), but unlike every ``add_*``/``remove_*``
+function above they take no explicit ``model=``/``reinitialize=`` either
+-- they accept a :mod:`opensim_models.components` wrapper (e.g. a
+``Body``, ``Box``, ``Screen``, ``OffsetFrame``) or the matching raw
+``opensim`` object directly, and transform an arbitrary ``(x, y, z)``
+point between the ground frame and that object's own local frame.
+
 Organized one file per component category (``bodies``, ``joints``,
 ``attachment``, ``frames`` for ``add_offset_frame``, ``primitives``,
 ``forces``, ``markers``, ``constraints``,
@@ -47,7 +56,8 @@ Organized one file per component category (``bodies``, ``joints``,
 ``contact`` for the named contact-geometry builders (``add_contact_sphere``/
 ``add_contact_half_space``/``add_contact_mesh``) and the real, force-based
 ``add_sliding_point_contact``) plus ``rotation``/``translation`` and their
-shared ``_spatial`` helpers, and ``geometry`` for ``euclidean_distance`` --
+shared ``_spatial`` helpers, and ``geometry`` for ``euclidean_distance``/
+``from_global_to_local``/``from_local_to_global`` --
 this module just re-exports every public name from all of them, so
 ``opensim_models.operators.<name>`` resolves exactly as it did when this
 was a single flat file.
@@ -97,7 +107,7 @@ from .contact import (
 )
 from .rotation import rotate_object
 from .translation import translate_object
-from .geometry import euclidean_distance
+from .geometry import euclidean_distance, from_global_to_local, from_local_to_global
 
 __all__ = [
     "add_component",
@@ -141,4 +151,6 @@ __all__ = [
     "rotate_object",
     "translate_object",
     "euclidean_distance",
+    "from_global_to_local",
+    "from_local_to_global",
 ]

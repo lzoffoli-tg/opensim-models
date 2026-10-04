@@ -23,7 +23,7 @@ src/opensim_models/
 		auxiliary.py                # controller/contact-geometry/probe
 		contact.py                  # add_contact_sphere/add_contact_half_space/add_contact_mesh (pura geometria) e add_sliding_point_contact (ExponentialContactForce, forza reale alternativa ad add_point_on_plane_constraint)
 		rotation.py / translation.py  # rotate_object/translate_object
-		geometry.py                 # euclidean_distance -- pura geometria, nessun OpenSimModel coinvolto
+		geometry.py                 # euclidean_distance (pura geometria) e from_global_to_local/from_local_to_global (leggono la posa corrente di un oggetto)
 		_shared.py / _spatial.py    # interno: helper generici condivisi fra i file sopra
 	_cad_import.py                 # interno: lettura STEP/STP e generazione mesh per OpenSimModel.from_step
 	_primitives.py                 # interno: writer mesh STL per box/cilindro/sfera, usati da operators/primitives.py e da components/box.py
@@ -65,7 +65,7 @@ tests/
 	test_user_generated_code_is_fresh.py  # verifica che _posture_generated.py/_joint_centers_generated.py siano allineati alle tabelle
 	test_screen.py                 # test esaustivi di Screen (dimensionamento, posa, mesh)
 	test_box.py                    # test esaustivi di Box (dimensioni/massa, posa live, spigoli, mesh)
-	test_geometry.py               # test di operators.euclidean_distance (nessuna dipendenza da OpenSim)
+	test_geometry.py               # test di operators.euclidean_distance (nessuna dipendenza da OpenSim) e di from_global_to_local/from_local_to_global (richiedono OpenSim)
 	test_cad_import.py             # test di OpenSimModel.from_step (richiede pythonocc-core)
 ```
 
@@ -228,6 +228,7 @@ print(user.joints)       # dict[str, components.Joint]
 print(user.muscles)      # dict[str, components.Muscle]
 print(user.markers)      # dict[str, components.Marker]
 print(user.coordinates)  # dict[str, components.Coordinate]
+print(user.frames)       # dict[str, components.OffsetFrame]: vuoto di default, vedi sotto
 ```
 
 Per accedere a un elemento specifico si possono usare i metodi nominati:
@@ -471,6 +472,21 @@ print(child_frame.position_global)   # stesso punto, nel ground frame
 
 **Attenzione**: se questo frame è il parent/child frame di un giunto (non, ad esempio, il frame di un `WeldConstraint`), `set_translation`/`set_orientation_deg` spostano il **corpo** a cui il frame appartiene, non il frame stesso nel ground frame -- un giunto esiste apposta per far coincidere i suoi due frame, quindi `position_global` di questo frame resta invariato dopo la modifica (confermato direttamente). Per spostare un punto a un target preciso nel ground frame usa `rotate_object`/`translate_object`, che risolvono per te il valore locale corretto invece di limitarsi a scrivere quello richiesto.
 
+### Convertire un punto fra ground frame e il frame locale di un oggetto
+
+`from_global_to_local(coordinates, obj)`/`from_local_to_global(coordinates, obj)` convertono un punto `(x, y, z)` qualunque (non necessariamente l'origine di `obj`) fra il ground frame e il frame locale di `obj`, leggendo la posa corrente di `obj` (`position_global`/orientamento) -- sono l'una l'inversa dell'altra:
+
+```python
+femore = user.body("femur_r")
+
+punto_locale = operators.from_global_to_local((0.0, 1.0, 0.0), femore)
+punto_ground = operators.from_local_to_global(punto_locale, femore)  # torna (0.0, 1.0, 0.0)
+```
+
+`obj` accetta sia il wrapper di questo pacchetto (`Body`, `Box`, `Screen`, `OffsetFrame`, ...) sia il rispettivo oggetto `opensim` grezzo, purché appartenga già a un `OpenSimModel`/`User` vivo -- stessa ampiezza accettata da `position_global`/`position_local` sui wrapper in `components`. Un `Marker` o un `Joint` non sono di per sé frame orientabili (un marker non ha un proprio orientamento, un giunto ne ha due -- parent e child): passare invece il parent frame del marker (`marker.parents[0]`) o `joint.parent_frame`/`joint.child_frame`.
+
+A differenza di ogni `add_*`/`remove_*` visto sopra, queste due funzioni non prendono né `model=` né `reinitialize=`: non modificano nulla, e la posa di `obj` viene letta -- tramite lo stesso helper condiviso (`components._position_and_rotation_in_ground`) dietro ogni `position_global`/`position_local` di questo pacchetto -- dal modello a cui `obj` già appartiene, risolto automaticamente nello stesso modo di `rotate_object`/`translate_object` per un oggetto grezzo.
+
 ### Creare un offset frame autonomo (`add_offset_frame`)
 
 `add_offset_frame(model, name, body, translation=..., orientation_deg=..., *, reinitialize=False)` costruisce un nuovo `opensim.PhysicalOffsetFrame` -- un punto/orientamento nominato, solidale a `body` -- e lo aggiunge al modello in una sola chiamata, restituendolo già wrappato in `components.OffsetFrame` (stesso wrapper usato per `joint.parent_frame`/`child_frame`, ma qui è il *costruttore* mancante: prima esisteva solo un offset frame interno, anonimo, usato da `add_model` per il proprio bookkeeping). Equivalente anche come metodo su `OpenSimModel` (quindi ereditato da `User`):
@@ -488,6 +504,13 @@ print(elbow_attachment.position_global, elbow_attachment.parents)   # (humerus_r
 
 ```python
 new_body_joint = operators.attach_component(model, new_body, to=elbow_attachment.raw)
+```
+
+**`model.frames`** elenca i frame autonomi così creati, sullo stesso modello di `.bodies`/`.muscles`/`.constraints`. OpenSim non ha un `FrameSet`: l'unico punto d'accesso nativo, `getFrameList()`, restituisce *ogni* componente di tipo `Frame` nell'albero del modello -- il che include anche ogni `Body`/`Ground` (anche loro `Frame` a tutti gli effetti, già esposti da `.bodies`/`.ground`) e i due `PhysicalOffsetFrame` che ogni giunto/`WeldConstraint` possiede per il proprio aggancio parent/child (già raggiungibili via `joint.parent_frame`/`child_frame` o `weld.frame1`/`frame2`). Verificato empiricamente sul modello base (`User`, 22 body/22 giunti): `getFrameList()` restituisce 67 elementi, e **tutti** ricadono in una di queste categorie già coperte altrove. Per comportarsi come `.bodies`/`.muscles` -- una categoria nuova, non ridondante, vuota finché non ci si aggiunge esplicitamente qualcosa -- `model.frames` esclude quindi `Body`/`Ground` e ogni frame il cui proprietario (`getOwner()`) è un `Joint` o un `Constraint`; quel che resta sono i frame autonomi creati con `add_offset_frame` (dispatch automatico a `components.OffsetFrame`, stesso meccanismo di `.constraints`/`.contact_geometries`):
+
+```python
+print(model.frames)                     # {} su un modello senza offset frame autonomi
+print(model.frames["elbow_pad_point"])  # components.OffsetFrame, dopo l'add_offset_frame sopra
 ```
 
 ### Vincoli e contatto con punti dedicati
@@ -652,6 +675,7 @@ in coordinate reali OpenSim/ground frame, in metri.
 - `Ground` -- mostra/nasconde il piano di riferimento a terra;
 - `Muscles` -- mostra/nasconde i percorsi muscolari;
 - `Markers` -- mostra/nasconde i marker;
+- `Axes` -- mostra/nasconde la terna di assi X/Y/Z (rosso/verde/blu) all'origine del ground frame, utile per leggere a colpo d'occhio l'orientamento del sistema di riferimento;
 - `Camera:` -- un menu a tendina con le viste preimpostate (`Front`, `Back`, `Left`, `Right`, `Top`, `Bottom`), che inquadra il modello da quella direzione.
 
 **Export** -- salva su disco, chiedendo sempre posizione e nome file tramite una finestra di selezione file:
@@ -673,7 +697,7 @@ Le colonne del file/tabella sono interpretate come coordinate OpenSim per nome (
 
 Questo era, in una versione precedente del package, un design a due finestre separate (il visualizzatore nativo Simbody più una finestra Tk agganciata sotto di esso via API Win32): necessario perché i widget interattivi nativi di Simbody (`Visualizer.addSlider`/`addMenu`/`setWindowTitle` -- qualunque cosa accetti una `SimTK::String`) non sono richiamabili da Python in almeno alcune build correnti di OpenSim. Il visualizzatore non è più quello nativo e gira nello stesso processo, quindi la sua finestra viene invece incorporata (solo su Windows) direttamente in un frame di questa stessa finestra Tk: un'unica finestra, nessun aggancio fra finestre separate da mantenere sincronizzato.
 
-La riproduzione gira su un thread Tk dedicato in background: `show(motion=...)` ritorna subito, e solo quel thread deve toccare lo stato del modello finché la finestra resta aperta (`opensim.State`/`opensim.Model` non sono thread-safe). `user.player` espone la macchina a stati della riproduzione (`opensim_models._gui.player.MotionPlayer`) dopo l'ultima chiamata con `motion`, utile per pilotarla/ispezionarla da codice. `user.visualizer` espone invece la vista 3D stessa (`opensim_models._gui.visualizer.VTKVisualizer`), utile per pilotare programmaticamente le visibilità/viste sopra (`set_ground_visible`, `set_muscles_visible`, `set_markers_visible`, `set_view`) o per salvare un'immagine (`capture_frame()`, vedi `opensim_models._gui.export`) senza passare dai pulsanti.
+La riproduzione gira su un thread Tk dedicato in background: `show(motion=...)` ritorna subito, e solo quel thread deve toccare lo stato del modello finché la finestra resta aperta (`opensim.State`/`opensim.Model` non sono thread-safe). `user.player` espone la macchina a stati della riproduzione (`opensim_models._gui.player.MotionPlayer`) dopo l'ultima chiamata con `motion`, utile per pilotarla/ispezionarla da codice. `user.visualizer` espone invece la vista 3D stessa (`opensim_models._gui.visualizer.VTKVisualizer`), utile per pilotare programmaticamente le visibilità/viste sopra (`set_ground_visible`, `set_muscles_visible`, `set_markers_visible`, `set_axes_visible`, `set_view`) o per salvare un'immagine (`capture_frame()`, vedi `opensim_models._gui.export`) senza passare dai pulsanti.
 
 Il file esportato con `user.export(...)` contiene il modello scalato con la postura corrente. `export()` copia inoltre automaticamente ogni mesh referenziata dai corpi del modello in una cartella `Geometry/` accanto al file `.osim` esportato (la convenzione di nome che OpenSim/Simbody cercano automaticamente accanto a un modello), così l'esportazione è portabile anche senza le cartelle di geometria originali (`models/user/assets/meshes/` per `User`, la cartella di `from_step` per un modello CAD).
 
@@ -857,8 +881,8 @@ python -m pytest -q
 - `tests/test_box.py` copre `Box` in modo esaustivo: massa/inerzia (default, esplicita, analitica per un parallelepipedo pieno) e relativa validazione (dimensioni/massa non positive), `origin`/`angle_deg`/`com` alla costruzione (inclusa la loro equivalenza con `position_global`/`inclination` ereditati, di cui sono ora alias), `set_origin`/`set_angle_deg` (ciascuno preserva l'altra metà della posa), il fatto che `origin`/`angle_deg`/`corners` restino sempre coerenti con la posa corrente (anche dopo `rotate()`/`translate()` ereditati, e attraverso un setter di dimensione, che preserva la posa durante la ricostruzione), gli 8 spigoli (valori attesi e comportamento rigido sotto traslazione), struttura del modello (un corpo, un `WeldJoint`), indipendenza delle istanze, `copy()`, e rigenerazione della mesh sui setter.
 - `tests/test_cad_import.py` copre `OpenSimModel.from_step`: massa/inerzia calcolate correttamente da un solido di riferimento (con conversione di unità), generazione della mesh, giunti verso ground di default, combinazione di più solidi in un unico corpo (`as_one_object`, di default e disattivata) e relativi errori (file mancante, STEP senza solidi).
 - `tests/test_operators.py` copre `opensim_models.operators`: `add_component`/`remove_component` generici e i relativi errori, i wrapper nominati per corpi/giunti/forze-muscoli/marker/vincoli, i costruttori di giunto nominati (gradi di libertà, posizione/orientamento), i corpi a forma primitiva (massa/inerzia analitiche, geometria nativa vs mesh generata, tipo di giunto, batching), il collegamento di mesh esistenti a un corpo, l'uso di `structural_change()` per un batch di modifiche correlate (corpo+giunto), la preservazione della postura delle coordinate non toccate dalla modifica strutturale, `position_global`/`position_local` su `ContactGeometry`, il dispatch di `add_weld_constraint`/`add_point_constraint`/`add_point_on_plane_constraint`/`add_sliding_point_contact` (e di `model.constraints`/`model.forces`) verso il wrapper più specifico (`WeldConstraint`, `PointConstraint`, `ConstantDistanceConstraint`, `ExponentialContactForce`, con i rispettivi punti verificati numericamente, inclusa una regressione sul bug per cui un vincolo/forza riletto da `model.constraints`/`model.forces` -- a differenza di uno appena restituito da `add_*` -- veniva wrappato nel tipo specifico ma con `.raw` ancora genericamente tipato, rompendo silenziosamente `.parents`/i suoi punti dietro un `getattr(..., "parents", ())`), `parents` in avanti su `Muscle` (deduplica i body del percorso) e `ContactGeometry`, e `parents` sui tre sottotipi di `Constraint` verificato anche "all'indietro" tramite `Body.parents`, la conferma che `add_coordinate_coupler_constraint`/un muscolo restino sul wrapper generico (`Constraint`/`Force`, mai promossi), `add_contact_sphere`/`add_contact_half_space`/`add_contact_mesh` (dispatch verso `ContactSphere`/`ContactHalfSpace`/`ContactMesh`, proprietà specifiche verificate numericamente, validazione del raggio, `parents`, e -- test di regressione che crasherebbe l'intero processo di test se il bug tornasse -- la costruzione pezzo-per-pezzo di `ContactMesh` che aggira il crash nativo del suo costruttore "tutto in una volta", sia con un file reale sia con uno inesistente per la risoluzione lazy), `add_offset_frame` (posizione/orientamento/`parents` verificati numericamente, path risultante `/bodyset/<body>/<name>`, utilizzabile a valle come `body=` di `add_marker`/`add_contact_sphere` e come `to=` di `attach_component` col fallback di `parent_point="com"` sull'origine del frame, e sopravvivenza confermata alla fusione `model + other` -- a differenza dell'ancora interna anonima di `add_model`, che resta deliberatamente fuori da ogni `_MERGE_SETS`), e `rotate_object`/`translate_object` (mutazione in place di marker e `PhysicalOffsetFrame`/`OffsetFrame`, sola lettura su `Body`/`Joint`, perno/oggetto esterni come componente o coordinata, funzionamento standalone senza modello, rotazione/traslazione rigida dell'intero modello attraverso i suoi giunti agganciati al ground, `inplace=False` -- copia indipendente del modello o dell'oggetto, originale invariato -- ed i relativi errori).
-- `tests/test_operators_public_api.py` verifica che lo split di `operators.py` in package (vedi "Contenuto del progetto") non abbia cambiato la superficie pubblica: `operators.__all__` elenca esattamente gli stessi nomi di prima (`euclidean_distance` incluso), tutti risolvono a un callable, e `from opensim_models.operators import *` funziona ancora.
-- `tests/test_geometry.py` copre `operators.euclidean_distance`: un caso noto (triangolo 3-4-5), punti coincidenti, simmetria, input come liste/array numpy, tipo di ritorno, e validazione (dimensione sbagliata, valori non finiti) -- l'unico file di test che non richiede i binding OpenSim installati, dato che la funzione è pura geometria.
+- `tests/test_operators_public_api.py` verifica che lo split di `operators.py` in package (vedi "Contenuto del progetto") non abbia cambiato la superficie pubblica: `operators.__all__` elenca esattamente gli stessi nomi di prima (`euclidean_distance`, `from_global_to_local`, `from_local_to_global` inclusi), tutti risolvono a un callable, e `from opensim_models.operators import *` funziona ancora.
+- `tests/test_geometry.py` copre `operators.euclidean_distance` (un caso noto -- triangolo 3-4-5 --, punti coincidenti, simmetria, input come liste/array numpy, tipo di ritorno, e validazione di dimensione/valori non finiti -- le uniche che non richiedono i binding OpenSim installati, dato che la funzione è pura geometria) e `operators.from_global_to_local`/`operators.from_local_to_global` (un caso noto con un corpo a posa nota -- ruotata e non -- verificato a mano, il round-trip globale->locale->globale e locale->globale->locale, l'accettazione sia del wrapper `Body`/`OffsetFrame` sia del rispettivo oggetto `opensim` grezzo, il caso specifico di `Box` -- il cui container privato viene ricostruito da zero a ogni cambio di posa, a differenza del registro proprietario generico su cui si appoggiano `Body`/`OffsetFrame` -- il rifiuto di `Marker`/`Joint`, che non sono frame orientabili, il rifiuto di un oggetto senza un modello proprietario risolvibile, e la validazione delle coordinate).
 - `tests/test_player.py` copre la logica pura (senza una finestra/visualizzatore reale) di `opensim_models._gui.player`: `MotionData` (conversione gradi->radianti solo sulle coordinate rotazionali quando `inDegrees=yes`, nessuna conversione su quelle traslazionali, interpolazione lineare e clamp fuori range, colonne che non sono coordinate del modello, errori su tabelle troppo corte) e `MotionPlayer` (play/pause, stop, cycle, avanti/indietro veloce con i relativi limiti e la ripartenza dal verso opposto, wraparound in avanti/indietro con `loop`, seek, e i relativi errori di costruzione). Il collegamento a una finestra Tk reale, l'incorporamento nativo Win32 della vista 3D, la navigazione della camera, il tooltip ed il salvataggio di immagine/animazione (`opensim_models._gui.export`) non sono automatizzati: richiedono un display e un contesto OpenGL reali, verificati manualmente.
 
 I test che richiedono i binding OpenSim vengono saltati automaticamente se il modulo `opensim` non è importabile; quelli di `test_cad_import.py` vengono saltati se `pythonocc-core` non è importabile; i test sui soli dati ANSUR restano eseguibili in ogni caso.

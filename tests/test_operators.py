@@ -287,6 +287,55 @@ def test_add_offset_frame_survives_add_model_merge():
     assert combined_frame.position_global == pytest.approx(frame.position_global)
 
 
+def test_model_frames_dispatches_a_standalone_offset_frame():
+    model = make_model()
+    body = add_welded_body(model, "b1", (1.0, 2.0, 3.0))
+    frame = operators.add_offset_frame(
+        model, "f1", body, translation=(0.1, 0.2, 0.3), reinitialize=True
+    )
+
+    assert type(model.frames["f1"]) is components.OffsetFrame
+    assert model.frames["f1"].position_global == pytest.approx(frame.position_global)
+    assert len(model.frames) == 1
+
+
+def test_model_frames_excludes_bodies_ground_and_a_joints_own_offset_frames():
+    # getFrameList() returns every Frame-typed component in the model,
+    # which includes Ground, every Body, and the two PhysicalOffsetFrames
+    # every joint owns for its own parent/child attachment (already
+    # reachable via Joint.parent_frame/child_frame) -- none of that is a
+    # *standalone* frame, so .frames must stay empty here even though the
+    # raw getFrameList() for this model is not.
+    model = make_model()
+    add_free_body(model, "b1")
+
+    assert len(list(model.model.getFrameList())) > 0
+    assert model.frames == {}
+
+
+def test_model_frames_excludes_a_weld_constraints_own_attachment_frames():
+    # A WeldConstraint builds two more PhysicalOffsetFrames of its own
+    # (constraint.frame1/frame2) -- also not a standalone frame.
+    model = make_model()
+    body1 = add_welded_body(model, "b1", (0, 0, 0))
+    body2 = add_welded_body(model, "b2", (0, 0, 0))
+
+    operators.add_weld_constraint(model, "weld1", body1, body2, reinitialize=True)
+
+    assert model.frames == {}
+
+
+def test_model_frames_is_rebuilt_fresh_and_not_cached():
+    model = make_model()
+    body = add_welded_body(model, "b1", (0.0, 0.0, 0.0))
+
+    assert model.frames == {}
+
+    operators.add_offset_frame(model, "f1", body, reinitialize=True)
+
+    assert list(model.frames) == ["f1"]
+
+
 # ---------------------------------------------------------------------------
 # Forces and muscles
 # ---------------------------------------------------------------------------
