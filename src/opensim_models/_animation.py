@@ -19,6 +19,9 @@ def save_animation(
     path: str | Path,
     *,
     size: tuple[int, int] = (900, 700),
+    camera_position: tuple[float, float, float] | None = None,
+    camera_focal_point: tuple[float, float, float] | None = None,
+    camera_view_up: tuple[float, float, float] | None = None,
 ) -> Path:
     """Render an OpenSim motion table to an MP4 without opening a window.
 
@@ -43,6 +46,16 @@ def save_animation(
         Output frame dimensions in pixels, as an even ``(width, height)``
         pair. Even dimensions are required by the H.264 pixel format.
         Defaults to ``(900, 700)``.
+    camera_position : tuple[float, float, float] or None, optional
+        Camera position in model ground-frame coordinates, in metres.
+        Defaults to the automatically framed position.
+    camera_focal_point : tuple[float, float, float] or None, optional
+        Ground-frame point in metres for the camera to look at. Defaults
+        to the automatically framed focal point.
+    camera_view_up : tuple[float, float, float] or None, optional
+        Camera up direction in ground-frame coordinates. Defaults to
+        ``(0, 1, 0)`` when a custom camera position or focal point is used,
+        or the automatically framed direction otherwise.
 
     Returns
     -------
@@ -60,7 +73,8 @@ def save_animation(
     ------
     ValueError
         If the table has fewer than two samples, invalid times, no matching
-        coordinate columns, an invalid output size, or a non-``.mp4`` path.
+        coordinate columns, an invalid output size or camera vector, or a
+        non-``.mp4`` path.
     """
     opensim = import_opensim()
     if not isinstance(model, (OpenSimModel, opensim.Model)):
@@ -115,6 +129,23 @@ def save_animation(
         raise ValueError("size must be a (width, height) pair of positive integers")
     if width % 2 or height % 2:
         raise ValueError("size width and height must both be even for H.264 video")
+
+    camera_vectors = {}
+    for name, vector in (
+        ("camera_position", camera_position),
+        ("camera_focal_point", camera_focal_point),
+        ("camera_view_up", camera_view_up),
+    ):
+        if vector is None:
+            camera_vectors[name] = None
+            continue
+        try:
+            values = np.asarray(vector, dtype=float)
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"{name} must contain three finite numbers") from error
+        if values.shape != (3,) or not np.all(np.isfinite(values)):
+            raise ValueError(f"{name} must contain three finite numbers")
+        camera_vectors[name] = tuple(float(value) for value in values)
 
     coordinates = raw_model.getCoordinateSet()
     coordinate_names = {
@@ -174,6 +205,12 @@ def save_animation(
     )
     writer = None
     try:
+        if any(value is not None for value in camera_vectors.values()):
+            visualizer.set_camera(
+                position=camera_vectors["camera_position"],
+                focal_point=camera_vectors["camera_focal_point"],
+                view_up=camera_vectors["camera_view_up"],
+            )
         writer = imageio.get_writer(
             str(destination), fps=fps, codec="libx264", quality=8,
             macro_block_size=1,

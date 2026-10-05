@@ -477,6 +477,45 @@ class VTKVisualizer:
         """Return whether marker spheres are currently shown."""
         return self._markers_visible
 
+    def set_camera(
+        self,
+        *,
+        position: tuple[float, float, float] | None = None,
+        focal_point: tuple[float, float, float] | None = None,
+        view_up: tuple[float, float, float] | None = None,
+    ) -> None:
+        """Set selected camera vectors, retaining current values for omitted ones."""
+        camera = self._renderer.GetActiveCamera()
+        current_position = camera.GetPosition()
+        current_focal_point = camera.GetFocalPoint()
+        current_view_up = camera.GetViewUp()
+        position = position or current_position
+        focal_point = focal_point or current_focal_point
+        view_up = view_up or current_view_up
+        direction = tuple(position[index] - focal_point[index] for index in range(3))
+        up_length = sum(value * value for value in view_up) ** 0.5
+        direction_length = sum(value * value for value in direction) ** 0.5
+        cross = (
+            direction[1] * view_up[2] - direction[2] * view_up[1],
+            direction[2] * view_up[0] - direction[0] * view_up[2],
+            direction[0] * view_up[1] - direction[1] * view_up[0],
+        )
+        if direction_length == 0 or up_length == 0 or sum(
+            value * value for value in cross
+        ) <= (direction_length * up_length * 1e-12) ** 2:
+            raise ValueError(
+                "camera position, focal point, and view-up direction must define "
+                "a non-degenerate view"
+            )
+        if position is not None:
+            camera.SetPosition(*position)
+        if focal_point is not None:
+            camera.SetFocalPoint(*focal_point)
+        if view_up is not None:
+            camera.SetViewUp(*view_up)
+        self._renderer.ResetCameraClippingRange()
+        self._render_window.Render()
+
     def set_view(self, name: str) -> None:
         """Point the camera at one of :data:`VIEW_NAMES`'s preset directions.
 

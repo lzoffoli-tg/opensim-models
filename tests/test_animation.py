@@ -45,6 +45,7 @@ def test_save_animation_renders_sto_offscreen_and_restores_pose(
     writer_options = {}
     rendered_values = []
     visualizer_options = {}
+    camera_options = {}
 
     class FakeVisualizer:
         def __init__(self, visualizer_model, **kwargs):
@@ -60,6 +61,9 @@ def test_save_animation_renders_sto_offscreen_and_restores_pose(
 
         def capture_frame(self):
             return np.zeros((4, 6, 3), dtype=np.uint8)
+
+        def set_camera(self, **kwargs):
+            camera_options.update(kwargs)
 
         def close(self):
             pass
@@ -77,6 +81,9 @@ def test_save_animation_renders_sto_offscreen_and_restores_pose(
         make_motion(),
         destination,
         size=(640, 360),
+        camera_position=(2.0, 1.0, 0.0),
+        camera_focal_point=(0.0, 1.0, 0.0),
+        camera_view_up=(0.0, 1.0, 0.0),
     )
 
     assert result == destination
@@ -85,6 +92,11 @@ def test_save_animation_renders_sto_offscreen_and_restores_pose(
     assert len(writer.frames) == 2
     assert rendered_values == pytest.approx([0.0, np.pi / 2])
     assert visualizer_options == {"offscreen": True, "size": (640, 360)}
+    assert camera_options == {
+        "position": (2.0, 1.0, 0.0),
+        "focal_point": (0.0, 1.0, 0.0),
+        "view_up": (0.0, 1.0, 0.0),
+    }
     assert writer.closed
     assert coordinate.getValue(state) == pytest.approx(original_value)
 
@@ -142,3 +154,15 @@ def test_save_animation_requires_mp4_path(tmp_path):
 
     with pytest.raises(ValueError, match=".mp4 extension"):
         save_animation(model, make_motion(), tmp_path / "motion.avi")
+
+
+def test_save_animation_rejects_invalid_camera_vector(tmp_path):
+    model = OpenSimModel(model_path=DEFAULT_MODEL_PATH)
+
+    with pytest.raises(ValueError, match="camera_position"):
+        save_animation(
+            model,
+            make_motion(),
+            tmp_path / "motion.mp4",
+            camera_position=(1.0, 2.0),
+        )
