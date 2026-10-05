@@ -2598,11 +2598,26 @@ class OpenSimModel:
         ...)``: see :func:`~opensim_models.operators.add_marker` for the
         full semantics (imported locally, see :meth:`add_body`).
 
+        To create a marker attached to one of this model's bodies, pass
+        its wrapped body and its local-frame location::
+
+            body = model.body("pelvis")
+            marker = components.Marker("custom_marker", body, (0.1, 0.2, 0.3))
+            model.add_marker(marker, reinitialize=True)
+
+        Construction sets the body's OpenSim frame as the marker's parent;
+        adding it to a different model is rejected. The location is an
+        ``(x, y, z)`` offset in metres, expressed in the body frame.
+
         Parameters
         ----------
-        marker : opensim.Marker
-            The already-constructed marker (with its name, parent frame,
-            and local-frame ``location`` already set).
+        marker : opensim.Marker or components.Marker
+            An already-constructed marker with its name, parent frame and
+            local-frame ``location`` set. Create a body-attached wrapper
+            with ``components.Marker(name, self.body(body_name),
+            (x, y, z))``; its parent frame is that body's OpenSim frame.
+            Markers constructed this way must be added to the same model
+            that owns the body.
         reinitialize : bool, optional
             When ``True``, rebuild the system immediately after adding,
             preserving the current posture/velocity. Defaults to

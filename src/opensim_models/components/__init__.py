@@ -27,11 +27,14 @@ the underlying ``opensim`` object, for anything not (yet) wrapped here.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
 from .. import _geometry
+
+if TYPE_CHECKING:
+    from ..model import OpenSimModel
 
 __all__ = [
     "Body",
@@ -62,7 +65,9 @@ def _positive(value: float) -> float:
     return float(value)
 
 
-def _position_and_rotation_in_ground(owner: "OpenSimModel", frame: Any) -> tuple[Any, Any]:
+def _position_and_rotation_in_ground(
+    owner: "OpenSimModel", frame: Any
+) -> tuple[Any, Any]:
     """Return ``frame``'s current ``(position, rotation)`` in the ground frame.
 
     ``position`` is a shape-``(3,)`` numpy array, in metres; ``rotation`` is
@@ -473,7 +478,9 @@ class Coordinate(_ComponentWrapper):
         """
         if not np.isfinite(degrees):
             raise ValueError("degrees must be finite")
-        self.set_value(float(np.deg2rad(degrees)), enforce_constraints=enforce_constraints)
+        self.set_value(
+            float(np.deg2rad(degrees)), enforce_constraints=enforce_constraints
+        )
 
     @property
     def speed(self) -> float:
@@ -567,7 +574,79 @@ class Coordinate(_ComponentWrapper):
 
 
 class Marker(_ComponentWrapper):
-    """Python-friendly wrapper around an ``opensim.Marker``."""
+    """Create a body-attached marker or wrap an existing ``opensim.Marker``.
+
+    To create a marker, pass its name, the :class:`Body` it belongs to, and
+    its local position in metres::
+
+        marker = Marker("tool_tip", model.body("tool"), (0.0, 0.2, 0.0))
+        model.add_marker(marker)
+
+    The marker is constructed with the body's OpenSim frame as its parent.
+    It is not added to the model until passed to
+    :meth:`~opensim_models.model.OpenSimModel.add_marker`.
+
+    The internal ``Marker(owner, raw)`` form remains supported for wrapping
+    markers already in a model.
+    """
+
+    def __init__(
+        self,
+        owner: "OpenSimModel | str",
+        raw_or_body: Any,
+        location: tuple[float, float, float] | None = None,
+    ) -> None:
+        """Create a body-attached marker, or wrap one already in a model.
+
+        Public construction takes ``(name, body, location)``, where
+        ``body`` is a :class:`Body` returned by the target model's
+        :meth:`~opensim_models.model.OpenSimModel.body` method and
+        ``location`` is a finite ``(x, y, z)`` offset in that body's local
+        frame, in metres. This creates the OpenSim marker with the body as
+        its parent frame, but does not insert it into a model. Add it to
+        ``body._owner`` with :meth:`~opensim_models.model.OpenSimModel.add_marker`.
+
+        The internal ``(owner, raw_marker)`` form wraps an existing
+        ``opensim.Marker`` and is used by model accessors and operators.
+
+        Raises
+        ------
+        TypeError
+            If the construction arguments do not match either supported
+            form, or ``body`` is not a :class:`Body` wrapper.
+        ValueError
+            If a local location coordinate is not finite.
+        """
+        if isinstance(owner, str):
+            name = owner
+            body = raw_or_body
+            if not isinstance(body, Body):
+                raise TypeError(
+                    "body must be a components.Body from the model to which "
+                    "the marker will be added"
+                )
+            if location is None:
+                raise TypeError("location is required when creating a marker")
+
+            x, y, z = location
+            if not all(np.isfinite(value) for value in (x, y, z)):
+                raise ValueError("location must be finite")
+
+            model = body._owner
+            raw = model.opensim.Marker(
+                name,
+                body.raw,
+                model.opensim.Vec3(float(x), float(y), float(z)),
+            )
+            super().__init__(model, raw)
+            return
+
+        if location is not None:
+            raise TypeError(
+                "location is only accepted when creating a marker as "
+                "Marker(name, body, location)"
+            )
+        super().__init__(owner, raw_or_body)
 
     @property
     def location(self) -> tuple[float, float, float]:
@@ -982,7 +1061,9 @@ class OffsetFrame(Frame):
         x, y, z = translation
         if not all(np.isfinite(value) for value in (x, y, z)):
             raise ValueError("translation must be finite")
-        self._raw.set_translation(self._owner.opensim.Vec3(float(x), float(y), float(z)))
+        self._raw.set_translation(
+            self._owner.opensim.Vec3(float(x), float(y), float(z))
+        )
 
     @property
     def orientation_deg(self) -> tuple[float, float, float]:
@@ -1290,13 +1371,17 @@ class WeldConstraint(Constraint):
         API (``get_translation()``/``get_orientation()``) off of a
         generically-typed frame reference.
         """
-        frame = self._owner.opensim.PhysicalOffsetFrame.safeDownCast(self._raw.getFrame1())
+        frame = self._owner.opensim.PhysicalOffsetFrame.safeDownCast(
+            self._raw.getFrame1()
+        )
         return OffsetFrame(self._owner, frame)
 
     @property
     def frame2(self) -> OffsetFrame:
         """The attachment frame on ``body2``, wrapped. See :attr:`frame1` for the ``safeDownCast`` note."""
-        frame = self._owner.opensim.PhysicalOffsetFrame.safeDownCast(self._raw.getFrame2())
+        frame = self._owner.opensim.PhysicalOffsetFrame.safeDownCast(
+            self._raw.getFrame2()
+        )
         return OffsetFrame(self._owner, frame)
 
     @property

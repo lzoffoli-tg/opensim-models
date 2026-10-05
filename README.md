@@ -245,6 +245,22 @@ coordinate = user.coordinate("hip_flexion_r")
 
 Il modello base di `User` contiene 22 corpi, 22 giunti, 80 muscoli, 66 marker e 39 coordinate.
 
+Per aggiungere un marker personalizzato a un corpo del modello, crealo usando il wrapper `Body` e la posizione locale in metri, poi aggiungilo al modello proprietario del corpo. L'aggiunta modifica la struttura: usa `reinitialize=True` per aggiornare subito il sistema OpenSim (oppure inserisci l'operazione in `model.structural_change()` se stai aggiungendo più componenti):
+
+```python
+from opensim_models import User, components
+
+model = User("M", percentile=50)
+pelvis = model.body("pelvis")
+marker = components.Marker("custom_pelvis_marker", pelvis, (0.1, 0.2, 0.3))
+model.add_marker(marker, reinitialize=True)
+
+print(marker.parents[0].name)       # pelvis
+print(marker.position_global)       # posizione aggiornata nel ground frame
+```
+
+`location` è l'offset locale rispetto al body; il frame OpenSim del corpo diventa il frame padre, quindi la posizione globale del marker segue i movimenti del body. La costruzione crea il marker ma non modifica da sola il modello. Il wrapper va aggiunto al modello che contiene il body; l'aggiunta a un altro modello viene rifiutata. È possibile usare anche `operators.add_marker(model, marker, reinitialize=True)`.
+
 ## Architettura: Model, State e propagazione
 
 OpenSim separa la *struttura* di un modello (`opensim.Model`: corpi, giunti, muscoli e le loro proprietà) dalla sua *condizione istantanea* (`opensim.State`: valori delle coordinate, velocità, attivazioni muscolari, e una cache di tutto ciò che ne viene derivato -- posizioni dei corpi, forze...). `OpenSimModel` espone entrambi direttamente come attributi: `model.model` e `model.state`.

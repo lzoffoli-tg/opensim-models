@@ -7,7 +7,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from opensim_models import OpenSimModel, operators
+from opensim_models import OpenSimModel, components, operators
 
 # DEFAULT_MODEL_PATH is User's internal default, reused here as a real .osim
 # fixture to test OpenSimModel's generic facade rather than User specifically.
@@ -353,6 +353,57 @@ def test_marker_location_can_be_read_and_updated():
     model.marker("RTOE").set_location((0.1, 0.02, 0.03))
 
     assert model.marker("RTOE").location == pytest.approx((0.1, 0.02, 0.03))
+
+
+def test_marker_can_be_created_for_a_body_and_added_to_its_model():
+    model = make_model()
+    body = model.body("pelvis")
+
+    marker = components.Marker("custom_pelvis_marker", body, (0.1, 0.2, 0.3))
+
+    assert marker.name == "custom_pelvis_marker"
+    assert marker.location == pytest.approx((0.1, 0.2, 0.3))
+    assert marker.parents[0] == body
+    assert "custom_pelvis_marker" not in model.markers
+
+    added = model.add_marker(marker, reinitialize=True)
+
+    assert added.name == "custom_pelvis_marker"
+    assert model.marker("custom_pelvis_marker").parents[0] == body
+    assert model.body("pelvis").parents[-1].name == "custom_pelvis_marker"
+
+    model.model.realizePosition(model.state)
+    raw_position = (
+        model.model.getMarkerSet()
+        .get("custom_pelvis_marker")
+        .getLocationInGround(model.state)
+    )
+    assert marker.position_global == pytest.approx(
+        tuple(raw_position.get(i) for i in range(3))
+    )
+
+
+def test_marker_creation_requires_a_body_wrapper_and_location():
+    model = make_model()
+    body = model.body("pelvis")
+
+    with pytest.raises(TypeError, match="location is required"):
+        components.Marker("missing_location", body)
+    with pytest.raises(TypeError, match="body must be a components.Body"):
+        components.Marker("raw_body", body.raw, (0.0, 0.0, 0.0))
+    with pytest.raises(ValueError, match="finite"):
+        components.Marker("non_finite", body, (float("inf"), 0.0, 0.0))
+
+
+def test_body_attached_marker_cannot_be_added_to_a_different_model():
+    model = make_model()
+    marker = components.Marker(
+        "custom_pelvis_marker", model.body("pelvis"), (0.0, 0.0, 0.0)
+    )
+    other_model = OpenSimModel(model_path=None)
+
+    with pytest.raises(ValueError, match="model that owns its body"):
+        other_model.add_marker(marker)
 
 
 def test_set_marker_location_rejects_non_finite_values():
