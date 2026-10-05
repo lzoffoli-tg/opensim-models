@@ -22,6 +22,10 @@ def save_animation(
     camera_position: tuple[float, float, float] | None = None,
     camera_focal_point: tuple[float, float, float] | None = None,
     camera_view_up: tuple[float, float, float] | None = None,
+    show_ground: bool = True,
+    show_muscles: bool = True,
+    show_markers: bool = True,
+    show_axes: bool = True,
 ) -> Path:
     """Render an OpenSim motion table to an MP4 without opening a window.
 
@@ -56,6 +60,15 @@ def save_animation(
         Camera up direction in ground-frame coordinates. Defaults to
         ``(0, 1, 0)`` when a custom camera position or focal point is used,
         or the automatically framed direction otherwise.
+    show_ground : bool, optional
+        Show the visualizer's ground reference plane (the floor grid).
+        Defaults to ``True``.
+    show_muscles : bool, optional
+        Show muscle paths. Defaults to ``True``.
+    show_markers : bool, optional
+        Show model markers. Defaults to ``True``.
+    show_axes : bool, optional
+        Show the ground-frame XYZ axes. Defaults to ``True``.
 
     Returns
     -------
@@ -75,6 +88,8 @@ def save_animation(
         If the table has fewer than two samples, invalid times, no matching
         coordinate columns, an invalid output size or camera vector, or a
         non-``.mp4`` path.
+    TypeError
+        If a visibility option is not boolean.
     """
     opensim = import_opensim()
     if not isinstance(model, (OpenSimModel, opensim.Model)):
@@ -129,6 +144,16 @@ def save_animation(
         raise ValueError("size must be a (width, height) pair of positive integers")
     if width % 2 or height % 2:
         raise ValueError("size width and height must both be even for H.264 video")
+
+    visibility_options = {
+        "show_ground": show_ground,
+        "show_muscles": show_muscles,
+        "show_markers": show_markers,
+        "show_axes": show_axes,
+    }
+    for name, value in visibility_options.items():
+        if not isinstance(value, (bool, np.bool_)):
+            raise TypeError(f"{name} must be a boolean")
 
     camera_vectors = {}
     for name, vector in (
@@ -205,6 +230,10 @@ def save_animation(
     )
     writer = None
     try:
+        visualizer.set_ground_visible(show_ground)
+        visualizer.set_muscles_visible(show_muscles)
+        visualizer.set_markers_visible(show_markers)
+        visualizer.set_axes_visible(show_axes)
         if any(value is not None for value in camera_vectors.values()):
             visualizer.set_camera(
                 position=camera_vectors["camera_position"],
