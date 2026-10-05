@@ -396,6 +396,33 @@ def test_add_marker_and_remove_marker():
     assert len(model.markers) == 0
 
 
+def test_add_marker_constructs_and_attaches_marker_from_coordinates():
+    model = OpenSimModel(model_path=None)
+    body = operators.add_body(
+        model, "marker_parent", mass=1.0, inertia=(1, 1, 1, 0, 0, 0)
+    )
+    operators.add_joint(
+        model,
+        opensim.FreeJoint(
+            "marker_parent_to_ground", model.model.getGround(), body.raw
+        ),
+    )
+    model.reinitialize()
+
+    marker = operators.add_marker(
+        model,
+        marker_name="created_by_operator",
+        body=body,
+        coordinates=(1.0, 2.0, 3.0),
+        coordinates_are_global=True,
+        reinitialize=True,
+    )
+
+    assert marker.name == "created_by_operator"
+    assert marker.position_global == pytest.approx((1.0, 2.0, 3.0))
+    assert marker.parents[0].name == "marker_parent"
+
+
 def test_add_coordinate_coupler_constraint_and_remove_constraint():
     model = make_model()
     add_free_body(model, "b1")

@@ -2591,46 +2591,82 @@ class OpenSimModel:
             reinitialize=reinitialize,
         )
 
-    def add_marker(self, marker: Any, *, reinitialize: bool = False) -> "components.Marker":
-        """Add an already-constructed marker to this model.
+    def add_marker(
+        self,
+        marker_name: Any,
+        body: Any = None,
+        coordinates: tuple[float, float, float] | None = None,
+        *,
+        coordinates_are_global: bool = False,
+        reinitialize: bool = False,
+    ) -> "components.Marker":
+        """Create and add a marker to this model, or add a prebuilt marker.
 
-        A thin wrapper equivalent to ``operators.add_marker(self, marker,
-        ...)``: see :func:`~opensim_models.operators.add_marker` for the
-        full semantics (imported locally, see :meth:`add_body`).
+        Create a marker directly by supplying its name, target body, and
+        coordinates in metres::
 
-        To create a marker attached to one of this model's bodies, pass
-        its wrapped body and its local-frame location::
+            marker = model.add_marker(
+                marker_name="custom_marker",
+                body="pelvis",
+                coordinates=(0.1, 0.2, 0.3),
+                coordinates_are_global=False,
+                reinitialize=True,
+            )
 
-            body = model.body("pelvis")
-            marker = components.Marker("custom_marker", body, (0.1, 0.2, 0.3))
-            model.add_marker(marker, reinitialize=True)
-
-        Construction sets the body's OpenSim frame as the marker's parent;
-        adding it to a different model is rejected. The location is an
-        ``(x, y, z)`` offset in metres, expressed in the body frame.
+        ``body`` may be a name in this model or a
+        :class:`~opensim_models.components.Body` wrapper belonging to this
+        model. Coordinates are local to the body by default; set
+        ``coordinates_are_global=True`` to pass a ground-frame point, which
+        is converted using the body's current pose. The marker is parented
+        to the body's OpenSim frame. ``reinitialize=True`` rebuilds the
+        system/state immediately, making the marker ready for derived
+        position queries. Preconstructed ``opensim.Marker`` and
+        ``components.Marker`` objects remain accepted as the first
+        argument for backwards compatibility.
 
         Parameters
         ----------
-        marker : opensim.Marker or components.Marker
-            An already-constructed marker with its name, parent frame and
-            local-frame ``location`` set. Create a body-attached wrapper
-            with ``components.Marker(name, self.body(body_name),
-            (x, y, z))``; its parent frame is that body's OpenSim frame.
-            Markers constructed this way must be added to the same model
-            that owns the body.
+        marker_name : str, opensim.Marker or components.Marker
+            New marker's name, or an already constructed marker.
+        body : str or components.Body, optional
+            Target body's name or wrapper. Required when ``marker_name``
+            is a string.
+        coordinates : sequence of 3 floats, optional
+            Point in metres. Required for new markers.
+        coordinates_are_global : bool, optional
+            Interpret ``coordinates`` in the ground frame instead of the
+            target body's local frame. Defaults to ``False``.
         reinitialize : bool, optional
-            When ``True``, rebuild the system immediately after adding,
-            preserving the current posture/velocity. Defaults to
-            ``False``.
+            Rebuild the OpenSim system and state immediately after adding,
+            preserving posture and velocity. Defaults to ``False``.
 
         Returns
         -------
         components.Marker
-            ``marker``, wrapped, for chaining.
+            The added marker, wrapped for access to its local and global
+            positions and parent body.
+
+        Raises
+        ------
+        TypeError
+            If required direct-construction arguments are missing or have
+            invalid types.
+        ValueError
+            If the target body belongs to another model or coordinates
+            are invalid.
+        RuntimeError
+            If ``body`` is a name that does not exist in this model.
         """
         from . import operators
 
-        return operators.add_marker(self, marker, reinitialize=reinitialize)
+        return operators.add_marker(
+            self,
+            marker_name,
+            body,
+            coordinates,
+            coordinates_are_global=coordinates_are_global,
+            reinitialize=reinitialize,
+        )
 
     def add_constraint(
         self, constraint: Any, *, reinitialize: bool = False

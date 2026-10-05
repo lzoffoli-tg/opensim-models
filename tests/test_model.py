@@ -359,17 +359,20 @@ def test_marker_can_be_created_for_a_body_and_added_to_its_model():
     model = make_model()
     body = model.body("pelvis")
 
-    marker = components.Marker("custom_pelvis_marker", body, (0.1, 0.2, 0.3))
-
-    assert marker.name == "custom_pelvis_marker"
-    assert marker.location == pytest.approx((0.1, 0.2, 0.3))
-    assert marker.parents[0] == body
     assert "custom_pelvis_marker" not in model.markers
-
-    added = model.add_marker(marker, reinitialize=True)
+    added = model.add_marker(
+        marker_name="custom_pelvis_marker",
+        body=body,
+        coordinates=(0.1, 0.2, 0.3),
+        reinitialize=True,
+    )
 
     assert added.name == "custom_pelvis_marker"
-    assert model.marker("custom_pelvis_marker").parents[0] == body
+    stored = model.marker("custom_pelvis_marker")
+    assert added == stored
+    assert int(added.raw.this) == int(stored.raw.this)
+    assert added.location == pytest.approx((0.1, 0.2, 0.3))
+    assert stored.parents[0] == body
     assert model.body("pelvis").parents[-1].name == "custom_pelvis_marker"
 
     model.model.realizePosition(model.state)
@@ -378,27 +381,79 @@ def test_marker_can_be_created_for_a_body_and_added_to_its_model():
         .get("custom_pelvis_marker")
         .getLocationInGround(model.state)
     )
-    assert marker.position_global == pytest.approx(
+    assert added.position_global == pytest.approx(
         tuple(raw_position.get(i) for i in range(3))
     )
 
 
-def test_marker_creation_requires_a_body_wrapper_and_location():
+def test_add_marker_requires_body_and_coordinates():
     model = make_model()
     body = model.body("pelvis")
 
-    with pytest.raises(TypeError, match="location is required"):
-        components.Marker("missing_location", body)
-    with pytest.raises(TypeError, match="body must be a components.Body"):
-        components.Marker("raw_body", body.raw, (0.0, 0.0, 0.0))
+    with pytest.raises(TypeError, match="coordinates are required"):
+        model.add_marker("missing_coordinates", body)
+    with pytest.raises(TypeError, match="body is required"):
+        model.add_marker("missing_body", coordinates=(0.0, 0.0, 0.0))
+    with pytest.raises(TypeError, match="body must be a body name"):
+        model.add_marker("raw_body", body.raw, (0.0, 0.0, 0.0))
     with pytest.raises(ValueError, match="finite"):
-        components.Marker("non_finite", body, (float("inf"), 0.0, 0.0))
+        model.add_marker(
+            "non_finite", body, (float("inf"), 0.0, 0.0)
+        )
+
+
+def test_add_marker_accepts_global_coordinates_and_converts_to_body_local():
+    model = make_model()
+    body = model.body("pelvis")
+    global_point = (0.2, 1.1, -0.3)
+
+    marker = model.add_marker(
+        "global_pelvis_marker",
+        body,
+        global_point,
+        coordinates_are_global=True,
+        reinitialize=True,
+    )
+
+    assert marker.position_global == pytest.approx(global_point)
+    assert marker.location != pytest.approx(global_point)
+
+
+def test_marker_constructor_accepts_global_coordinates():
+    model = make_model()
+    body = model.body("pelvis")
+    global_point = (0.2, 1.1, -0.3)
+
+    marker = components.Marker(
+        marker_name="constructed_global_marker",
+        body=body,
+        coordinates=global_point,
+        coordinates_are_global=True,
+    )
+
+    expected_local = operators.from_global_to_local(global_point, body)
+    assert marker.location == pytest.approx(expected_local)
+
+
+def test_add_marker_accepts_body_name():
+    model = make_model()
+
+    marker = model.add_marker(
+        "named_body_marker",
+        "pelvis",
+        (0.0, 0.0, 0.0),
+        reinitialize=True,
+    )
+
+    assert marker.parents[0].name == "pelvis"
 
 
 def test_body_attached_marker_cannot_be_added_to_a_different_model():
     model = make_model()
     marker = components.Marker(
-        "custom_pelvis_marker", model.body("pelvis"), (0.0, 0.0, 0.0)
+        marker_name="custom_pelvis_marker",
+        body=model.body("pelvis"),
+        coordinates=(0.0, 0.0, 0.0),
     )
     other_model = OpenSimModel(model_path=None)
 

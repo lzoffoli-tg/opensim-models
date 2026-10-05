@@ -576,77 +576,99 @@ class Coordinate(_ComponentWrapper):
 class Marker(_ComponentWrapper):
     """Create a body-attached marker or wrap an existing ``opensim.Marker``.
 
-    To create a marker, pass its name, the :class:`Body` it belongs to, and
-    its local position in metres::
+    To create a marker directly, pass its name, owning body, coordinates,
+    and optionally whether those coordinates are in the ground frame::
 
-        marker = Marker("tool_tip", model.body("tool"), (0.0, 0.2, 0.0))
-        model.add_marker(marker)
+        marker = Marker(
+            marker_name="tool_tip",
+            body=model.body("tool"),
+            coordinates=(0.0, 0.2, 0.0),
+            coordinates_are_global=False,
+        )
+        model.add_marker(marker, reinitialize=True)
 
-    The marker is constructed with the body's OpenSim frame as its parent.
-    It is not added to the model until passed to
-    :meth:`~opensim_models.model.OpenSimModel.add_marker`.
+    Coordinates are metres. By default they are local to ``body``. If
+    ``coordinates_are_global`` is ``True``, the ground-frame point is
+    converted into the body's local frame using the body's current model
+    state. The marker uses the body's OpenSim frame as its parent. This
+    constructor creates the marker but does not add it to the model.
 
-    The internal ``Marker(owner, raw)`` form remains supported for wrapping
-    markers already in a model.
+    The internal ``Marker(owner, raw_marker)`` form remains supported for
+    wrapping markers already in a model.
     """
 
     def __init__(
         self,
-        owner: "OpenSimModel | str",
-        raw_or_body: Any,
-        location: tuple[float, float, float] | None = None,
+        marker_name: "OpenSimModel | str",
+        body: Any,
+        coordinates: tuple[float, float, float] | None = None,
+        *,
+        coordinates_are_global: bool = False,
     ) -> None:
-        """Create a body-attached marker, or wrap one already in a model.
+        """Create a marker attached to ``body``, or wrap an existing marker.
 
-        Public construction takes ``(name, body, location)``, where
-        ``body`` is a :class:`Body` returned by the target model's
-        :meth:`~opensim_models.model.OpenSimModel.body` method and
-        ``location`` is a finite ``(x, y, z)`` offset in that body's local
-        frame, in metres. This creates the OpenSim marker with the body as
-        its parent frame, but does not insert it into a model. Add it to
-        ``body._owner`` with :meth:`~opensim_models.model.OpenSimModel.add_marker`.
+        Public construction uses ``marker_name``, a :class:`Body` wrapper,
+        and a finite 3D ``coordinates`` point in metres. The body must
+        belong to the model where the marker will be added.
+        ``coordinates_are_global=False`` interprets the point in the
+        body's local frame; when ``True``, the point is interpreted in the
+        ground frame and converted to local coordinates using the body's
+        current pose.
 
-        The internal ``(owner, raw_marker)`` form wraps an existing
-        ``opensim.Marker`` and is used by model accessors and operators.
+        Construction only creates the OpenSim marker. Add it with
+        ``model.add_marker(marker, reinitialize=True)`` before querying
+        model-derived values such as :attr:`position_global`.
+
+        The internal ``(owner, raw_marker)`` form is used to wrap a marker
+        already in a model; the coordinate arguments are not used in that
+        form.
 
         Raises
         ------
         TypeError
-            If the construction arguments do not match either supported
-            form, or ``body`` is not a :class:`Body` wrapper.
+            If ``body`` is not a :class:`Body` wrapper, ``coordinates``
+            are missing, or invalid coordinate arguments are supplied
+            while wrapping an existing marker.
         ValueError
-            If a local location coordinate is not finite.
+            If ``coordinates`` do not contain exactly three finite values.
         """
-        if isinstance(owner, str):
-            name = owner
-            body = raw_or_body
+        if isinstance(marker_name, str):
             if not isinstance(body, Body):
                 raise TypeError(
                     "body must be a components.Body from the model to which "
                     "the marker will be added"
                 )
-            if location is None:
-                raise TypeError("location is required when creating a marker")
+            if coordinates is None:
+                raise TypeError("coordinates are required when creating a marker")
 
-            x, y, z = location
-            if not all(np.isfinite(value) for value in (x, y, z)):
-                raise ValueError("location must be finite")
+            point = np.asarray(coordinates, dtype=float)
+            if point.shape != (3,):
+                raise ValueError(
+                    "coordinates must contain exactly three values (x, y, z)"
+                )
+            if not np.all(np.isfinite(point)):
+                raise ValueError("coordinates must be finite")
+
+            if coordinates_are_global:
+                from ..operators.geometry import from_global_to_local
+
+                point = np.asarray(from_global_to_local(point, body), dtype=float)
 
             model = body._owner
-            raw = model.opensim.Marker(
-                name,
+            raw_marker = model.opensim.Marker(
+                marker_name,
                 body.raw,
-                model.opensim.Vec3(float(x), float(y), float(z)),
+                model.opensim.Vec3(*(float(value) for value in point)),
             )
-            super().__init__(model, raw)
+            super().__init__(model, raw_marker)
             return
 
-        if location is not None:
+        if coordinates is not None or coordinates_are_global:
             raise TypeError(
-                "location is only accepted when creating a marker as "
-                "Marker(name, body, location)"
+                "coordinates and coordinates_are_global are only accepted "
+                "when creating a marker with Marker(marker_name, body, coordinates)"
             )
-        super().__init__(owner, raw_or_body)
+        super().__init__(marker_name, body)
 
     @property
     def location(self) -> tuple[float, float, float]:

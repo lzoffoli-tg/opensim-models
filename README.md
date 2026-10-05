@@ -248,18 +248,22 @@ Il modello base di `User` contiene 22 corpi, 22 giunti, 80 muscoli, 66 marker e 
 Per aggiungere un marker personalizzato a un corpo del modello, crealo usando il wrapper `Body` e la posizione locale in metri, poi aggiungilo al modello proprietario del corpo. L'aggiunta modifica la struttura: usa `reinitialize=True` per aggiornare subito il sistema OpenSim (oppure inserisci l'operazione in `model.structural_change()` se stai aggiungendo più componenti):
 
 ```python
-from opensim_models import User, components
+from opensim_models import User
 
 model = User("M", percentile=50)
-pelvis = model.body("pelvis")
-marker = components.Marker("custom_pelvis_marker", pelvis, (0.1, 0.2, 0.3))
-model.add_marker(marker, reinitialize=True)
+marker = model.add_marker(
+    marker_name="custom_pelvis_marker",
+    body="pelvis",
+    coordinates=(0.1, 0.2, 0.3),
+    coordinates_are_global=False,
+    reinitialize=True,
+)
 
 print(marker.parents[0].name)       # pelvis
 print(marker.position_global)       # posizione aggiornata nel ground frame
 ```
 
-`location` è l'offset locale rispetto al body; il frame OpenSim del corpo diventa il frame padre, quindi la posizione globale del marker segue i movimenti del body. La costruzione crea il marker ma non modifica da sola il modello. Il wrapper va aggiunto al modello che contiene il body; l'aggiunta a un altro modello viene rifiutata. È possibile usare anche `operators.add_marker(model, marker, reinitialize=True)`.
+`body` accetta il nome di un body nel modello o il suo wrapper (`model.body("pelvis")`). `coordinates` è una terna in metri: con `coordinates_are_global=False` (default) è un offset locale rispetto al body; con `True` è un punto nel ground frame e viene convertito nel frame locale corrente del body. La chiamata crea e aggiunge il marker direttamente. `reinitialize=True` aggiorna subito il sistema OpenSim e il relativo state, così le posizioni derivate sono immediatamente leggibili; durante aggiunte in batch si può usare `model.structural_change()` e lasciare `reinitialize=False`.
 
 ## Architettura: Model, State e propagazione
 
@@ -388,10 +392,10 @@ print(model.bodies.getSize())  # 1
 
 Aggiungere o rimuovere un componente è un cambiamento *strutturale*: rende `model.state` immediatamente non valido (non solo i suoi valori di default, ma proprio l'oggetto stato -- leggerlo crasha il processo invece di sollevare un'eccezione catturabile), perché la struttura del sistema è cambiata sotto di esso. Per questo ogni funzione `add_*`/`remove_*` di default (`reinitialize=False`) esegue solo la modifica strutturale, senza toccare lo stato:
 
-- per una singola modifica autosufficiente, passa `reinitialize=True` (es. `operators.add_marker(model, marker, reinitialize=True)`);
+- per una singola modifica autosufficiente, passa `reinitialize=True` (es. `model.add_marker("tool_tip", body="tool_body", coordinates=(0.0, 0.2, 0.0), reinitialize=True)`);
 - per un gruppo di modifiche correlate (un corpo e il giunto che lo collega; un giunto e il corpo che rimuove insieme) usa `model.structural_change()`, che sincronizza la postura corrente **prima** che inizi il blocco (quando lo stato è ancora valido) e ricostruisce il sistema **una sola volta** all'uscita, preservando quella postura. Non leggere `model.state` (direttamente, o tramite un accessor di coordinate/marker/muscoli) dentro il blocco.
 
-`add_body` costruisce direttamente un `opensim.Body` (unico tipo con un costruttore universale); per forze/muscoli, marker, vincoli, controller, geometrie di contatto e probe -- che in OpenSim hanno costruttori molto diversi tra loro -- le funzioni `add_*` si limitano ad agganciare al modello un componente già costruito dal chiamante con l'API nativa di OpenSim (es. `opensim.Millard2012EquilibriumMuscle(...)`). È disponibile anche una coppia generica `add_component(model, kind, component)`/`remove_component(model, kind, name)` per qualunque categoria (`"body"`, `"joint"`, `"force"`, `"marker"`, `"constraint"`, `"controller"`, `"contact_geometry"`, `"probe"`), utile per codice generico che non conosce la categoria in anticipo.
+`add_body` costruisce direttamente un `opensim.Body`; `add_marker` costruisce direttamente un marker collegato al body indicato usando le coordinate fornite. Per forze/muscoli, vincoli, controller, geometrie di contatto e probe -- che in OpenSim hanno costruttori molto diversi tra loro -- le funzioni `add_*` si limitano ad agganciare al modello un componente già costruito dal chiamante con l'API nativa di OpenSim (es. `opensim.Millard2012EquilibriumMuscle(...)`). È disponibile anche una coppia generica `add_component(model, kind, component)`/`remove_component(model, kind, name)` per qualunque categoria (`"body"`, `"joint"`, `"force"`, `"marker"`, `"constraint"`, `"controller"`, `"contact_geometry"`, `"probe"`), utile per codice generico che non conosce la categoria in anticipo.
 
 `add_body` accetta anche `mesh_files` per collegare una o più mesh già esistenti (`.vtp`/`.stl`/`.obj`) come geometria del corpo, registrandone automaticamente le cartelle per la ricerca geometrica di OpenSim:
 
