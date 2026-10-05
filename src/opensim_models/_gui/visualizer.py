@@ -187,6 +187,13 @@ class VTKVisualizer:
         but before its first paint -- :mod:`opensim_models._gui.player`
         passes a callback that reparents it into its own Tk frame right
         then.
+    offscreen : bool, optional
+        Render without creating an interactive render-window interactor.
+        Used by :func:`opensim_models.save_animation` to export video
+        without opening a window. Defaults to ``False``.
+    size : tuple[int, int], optional
+        Render-window dimensions in pixels as ``(width, height)``.
+        Defaults to :data:`DEFAULT_SIZE`.
 
     Raises
     ------
@@ -194,7 +201,14 @@ class VTKVisualizer:
         If the ``vtk`` package is not installed.
     """
 
-    def __init__(self, model: "OpenSimModel", *, embed: Any = None) -> None:
+    def __init__(
+        self,
+        model: "OpenSimModel",
+        *,
+        embed: Any = None,
+        offscreen: bool = False,
+        size: tuple[int, int] = DEFAULT_SIZE,
+    ) -> None:
         try:
             import vtk
         except ImportError as error:
@@ -208,17 +222,22 @@ class VTKVisualizer:
         self._renderer = vtk.vtkRenderer()
         self._renderer.SetBackground(0.92, 0.93, 0.95)
         self._render_window = vtk.vtkRenderWindow()
+        if offscreen:
+            self._render_window.SetOffScreenRendering(1)
         self._render_window.AddRenderer(self._renderer)
-        self._render_window.SetSize(*DEFAULT_SIZE)
+        self._render_window.SetSize(*size)
         self._render_window.SetWindowName(self._window_title())
-        self._interactor = vtk.vtkRenderWindowInteractor()
-        self._interactor.SetRenderWindow(self._render_window)
-        # kept as an instance attribute (not a local), since VTK's Python
-        # dispatch into an overridden virtual method requires the Python
-        # wrapper object itself to stay alive for as long as it is
-        # installed on the interactor -- see _build_interactor_style.
-        self._interactor_style = _build_interactor_style(vtk)
-        self._interactor.SetInteractorStyle(self._interactor_style)
+        self._interactor = None
+        self._interactor_style = None
+        if not offscreen:
+            self._interactor = vtk.vtkRenderWindowInteractor()
+            self._interactor.SetRenderWindow(self._render_window)
+            # kept as an instance attribute (not a local), since VTK's Python
+            # dispatch into an overridden virtual method requires the Python
+            # wrapper object itself to stay alive for as long as it is
+            # installed on the interactor -- see _build_interactor_style.
+            self._interactor_style = _build_interactor_style(vtk)
+            self._interactor.SetInteractorStyle(self._interactor_style)
         self._picker = vtk.vtkCellPicker()
         self._picker.SetTolerance(0.0005)
 
@@ -245,9 +264,10 @@ class VTKVisualizer:
         self._build_actors()
         self._build_muscle_actors()
         self._build_marker_actors()
-        self._interactor.AddObserver("MouseMoveEvent", self._on_mouse_move)
-        self._interactor.AddObserver("LeaveEvent", self._on_mouse_leave)
-        self._interactor.Initialize()
+        if self._interactor is not None:
+            self._interactor.AddObserver("MouseMoveEvent", self._on_mouse_move)
+            self._interactor.AddObserver("LeaveEvent", self._on_mouse_leave)
+            self._interactor.Initialize()
         if embed is not None:
             embed(self.get_window_id())
         self.show(model.state)
@@ -605,7 +625,8 @@ class VTKVisualizer:
         responsive at all; :mod:`opensim_models._gui.player` calls it once per
         tick of its own Tk loop.
         """
-        self._interactor.ProcessEvents()
+        if self._interactor is not None:
+            self._interactor.ProcessEvents()
 
     def get_size(self) -> tuple[int, int]:
         """Return the current render window size in pixels, as ``(width, height)``."""

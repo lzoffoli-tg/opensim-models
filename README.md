@@ -9,6 +9,7 @@ Package Python per costruire e comporre modelli OpenSim. `OpenSimModel` è una f
 ```text
 src/opensim_models/
 	model.py                       # OpenSimModel: facade generica, show(), composizione di modelli, OpenSimModel.from_step
+	_animation.py                  # API pubblica save_animation() per esportare motion .sto in MP4 off-screen
 	_registry.py                   # interno: registro Body->OpenSimModel e iterazione generica di un opensim.Set, condivisi da model.py e operators/
 	operators/                     # add_*/remove_* generici per corpi, giunti, forze/muscoli, marker, vincoli, ... (package, un file per categoria)
 		__init__.py                 # ri-esporta tutti i nomi pubblici: l'import `from opensim_models import operators` non cambia
@@ -62,6 +63,7 @@ tests/
 	test_operators.py              # test esaustivi di opensim_models.operators
 	test_operators_public_api.py   # verifica che `operators.__all__`/ogni nome pubblico risolvano esattamente come prima dello split in package
 	test_player.py                 # test della logica pura di riproduzione (opensim_models._gui.player)
+	test_animation.py              # test dell'API pubblica save_animation() con renderer/encoder isolati
 	test_user.py                   # test esaustivi di User (dati ANSUR, scaling, postura)
 	test_user_generated_code_is_fresh.py  # verifica che _posture_generated.py/_joint_centers_generated.py siano allineati alle tabelle
 	test_screen.py                 # test esaustivi di Screen (dimensionamento, posa, mesh)
@@ -752,6 +754,24 @@ user.show(motion="simulazione.mot", loop=True, fps=30)
 
 Le colonne del file/tabella sono interpretate come coordinate OpenSim per nome (es. `"hip_flexion_r"`); quelle angolari vengono convertite automaticamente da gradi a radianti se la tabella dichiara `inDegrees=yes` (come fanno i file `.mot` standard), quelle traslazionali restano sempre in metri. `loop` imposta lo stato iniziale dell'interruttore "Cycle"; `fps` è la frequenza di aggiornamento della riproduzione e del ridisegno della vista 3D, ed è anche il frame rate usato per campionare ed esportare l'animazione con il pulsante 🎬.
 
+Per esportare direttamente una motion in MP4 senza aprire la finestra interattiva, usa l'API pubblica `opensim_models.save_animation`:
+
+```python
+import opensim as osim
+import opensim_models as osm
+
+model = osm.OpenSimModel("modello.osim")
+motion = osim.TimeSeriesTable("simulazione.sto")
+video_path = osm.save_animation(
+    model,
+    motion,
+    "video/simulazione.mp4",
+    size=(1280, 720),
+)
+```
+
+`model` può essere anche un `opensim.Model`; in quel caso la sua posa iniziale viene creata con `initSystem()`. `motion` accetta un percorso `.sto` oppure una `TimeSeriesTable`; i tempi vengono letti dalla colonna indipendente della tabella, quindi non occorre specificarne il nome. Il frame rate è calcolato dalla durata e dal numero di intervalli della tabella; le pose vengono renderizzate uniformemente nell'intervallo temporale completo. Sono applicate le colonne che corrispondono esattamente a nomi di coordinate o hanno il formato `/jointset/.../<nome-coordinata>/value` prodotto dalle tabelle di stati OpenSim; velocità e altri stati sono ignorati. La conversione gradi-radianti segue i metadati `inDegrees`. La posa del modello viene ripristinata al termine. `size` è opzionale e indica `(larghezza, altezza)` in pixel (entrambi pari, requisito H.264); la funzione restituisce il percorso MP4 scritto.
+
 Questo era, in una versione precedente del package, un design a due finestre separate (il visualizzatore nativo Simbody più una finestra Tk agganciata sotto di esso via API Win32): necessario perché i widget interattivi nativi di Simbody (`Visualizer.addSlider`/`addMenu`/`setWindowTitle` -- qualunque cosa accetti una `SimTK::String`) non sono richiamabili da Python in almeno alcune build correnti di OpenSim. Il visualizzatore non è più quello nativo e gira nello stesso processo, quindi la sua finestra viene invece incorporata (solo su Windows) direttamente in un frame di questa stessa finestra Tk: un'unica finestra, nessun aggancio fra finestre separate da mantenere sincronizzato.
 
 La riproduzione gira su un thread Tk dedicato in background: `show(motion=...)` ritorna subito, e solo quel thread deve toccare lo stato del modello finché la finestra resta aperta (`opensim.State`/`opensim.Model` non sono thread-safe). `user.player` espone la macchina a stati della riproduzione (`opensim_models._gui.player.MotionPlayer`) dopo l'ultima chiamata con `motion`, utile per pilotarla/ispezionarla da codice. `user.visualizer` espone invece la vista 3D stessa (`opensim_models._gui.visualizer.VTKVisualizer`), utile per pilotare programmaticamente le visibilità/viste sopra (`set_ground_visible`, `set_muscles_visible`, `set_markers_visible`, `set_axes_visible`, `set_view`) o per salvare un'immagine (`capture_frame()`, vedi `opensim_models._gui.export`) senza passare dai pulsanti.
@@ -971,7 +991,7 @@ python -m pytest -q
 - `tests/test_operators_public_api.py` verifica che lo split di `operators.py` in package (vedi "Contenuto del progetto") non abbia cambiato la superficie pubblica: `operators.__all__` elenca esattamente gli stessi nomi di prima (`euclidean_distance`, `from_global_to_local`, `from_local_to_global` inclusi), tutti risolvono a un callable, e `from opensim_models.operators import *` funziona ancora.
 - `tests/test_solving.py` copre `operators.solve_coordinates`/`operators.solve_point_coincidence` (e i rispettivi metodi delegati `OpenSimModel.solve_coordinates`/`solve_point_coincidence`): il nucleo generico su un modello minimo costruito ad hoc (un corpo con un `PinJoint` e un marker, con cinematica diretta nota in forma chiusa), la coerenza fra il valore riportato (`result.x`) e lo stato effettivamente lasciato sul modello, il default di `x0` al valore corrente della coordinata, la validazione (`coordinate_names`/`point_pairs` vuoti, `x0` di lunghezza sbagliata, forma di `point_pairs` non valida), una non convergenza forzata (`max_nfev=1`) verificata come eccezione ordinaria (o risultato con `success=False`, con `raise_on_failure=False`) e non come crash, entrambe le forme di `point_pairs` (`(getter_a, getter_b)` e `(frame_a, punto_a, frame_b, punto_b)`, quest'ultima nello stesso schema spallaccio/pad o tallone/poggiapiedi di `analisi.py`), e -- sul modello `User` reale, non solo sul modello minimo -- un confronto diretto con un `brentq` costruito a mano (stesse primitive `enforce_constraints=False`/`realizePosition`) sulla stessa condizione, e un recupero multi-coordinata in stile cinematica inversa (postura nota, azzerata, poi ritrovata da una stima vicina).
 - `tests/test_geometry.py` copre `operators.euclidean_distance` (un caso noto -- triangolo 3-4-5 --, punti coincidenti, simmetria, input come liste/array numpy, tipo di ritorno, e validazione di dimensione/valori non finiti -- le uniche che non richiedono i binding OpenSim installati, dato che la funzione è pura geometria) e `operators.from_global_to_local`/`operators.from_local_to_global` (un caso noto con un corpo a posa nota -- ruotata e non -- verificato a mano, il round-trip globale->locale->globale e locale->globale->locale, l'accettazione sia del wrapper `Body`/`OffsetFrame` sia del rispettivo oggetto `opensim` grezzo, il caso specifico di `Box` -- il cui container privato viene ricostruito da zero a ogni cambio di posa, a differenza del registro proprietario generico su cui si appoggiano `Body`/`OffsetFrame` -- il rifiuto di `Marker`/`Joint`, che non sono frame orientabili, il rifiuto di un oggetto senza un modello proprietario risolvibile, e la validazione delle coordinate).
-- `tests/test_player.py` copre la logica pura (senza una finestra/visualizzatore reale) di `opensim_models._gui.player`: `MotionData` (conversione gradi->radianti solo sulle coordinate rotazionali quando `inDegrees=yes`, nessuna conversione su quelle traslazionali, interpolazione lineare e clamp fuori range, colonne che non sono coordinate del modello, errori su tabelle troppo corte) e `MotionPlayer` (play/pause, stop, cycle, avanti/indietro veloce con i relativi limiti e la ripartenza dal verso opposto, wraparound in avanti/indietro con `loop`, seek, e i relativi errori di costruzione). Il collegamento a una finestra Tk reale, l'incorporamento nativo Win32 della vista 3D, la navigazione della camera, il tooltip ed il salvataggio di immagine/animazione (`opensim_models._gui.export`) non sono automatizzati: richiedono un display e un contesto OpenGL reali, verificati manualmente.
+- `tests/test_player.py` copre la logica pura (senza una finestra/visualizzatore reale) di `opensim_models._gui.player`: `MotionData` (conversione gradi->radianti solo sulle coordinate rotazionali quando `inDegrees=yes`, nessuna conversione su quelle traslazionali, interpolazione lineare e clamp fuori range, colonne che non sono coordinate del modello, errori su tabelle troppo corte) e `MotionPlayer` (play/pause, stop, cycle, avanti/indietro veloce con i relativi limiti e la ripartenza dal verso opposto, wraparound in avanti/indietro con `loop`, seek, e i relativi errori di costruzione). `tests/test_animation.py` copre l'API pubblica `save_animation()` sostituendo renderer ed encoder; il salvataggio con un backend OpenGL reale, la finestra Tk, l'incorporamento Win32, la camera e il tooltip restano verifiche manuali.
 
 I test che richiedono i binding OpenSim vengono saltati automaticamente se il modulo `opensim` non è importabile; quelli di `test_cad_import.py` vengono saltati se `pythonocc-core` non è importabile; i test sui soli dati ANSUR restano eseguibili in ogni caso.
 
