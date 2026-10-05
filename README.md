@@ -2,7 +2,7 @@
 
 Package Python per costruire e comporre modelli OpenSim. `OpenSimModel` è una facade generica su un modello OpenSim (caricamento, coordinate, marker, muscoli, scaling, rotazione/traslazione rigida, visualizzazione (con riproduzione di una simulazione), composizione di più modelli, importazione da CAD) -- un **container**, nel senso CAD del termine. `User`, oggi la sua unica sottoclasse concreta, è un utente antropometrico costruito a partire dal modello full-body di Rajagopal-Lai-Uhlrich e dai riferimenti ANSUR II, già scalato e pronto per analisi biomeccaniche, simulazioni e manipolazione della postura.
 
-`Screen` e `Box` sono invece **componenti** (parti, sempre nel senso CAD): un pannello plexiglass parametrico (es. per rappresentare un monitor in scena) e un parallelepipedo rigido generico (es. per un ingombro o un componente di un attrezzo). A differenza di `User`, non sono `OpenSimModel`: non hanno un proprio `show()`/`export()`, e per essere visualizzati vanno prima aggiunti a un container (`model + screen`, `model + box`, vedi "Comporre più modelli").
+`Screen`, `Box` e `Cylinder` sono invece **componenti** (parti, sempre nel senso CAD): un pannello plexiglass parametrico (es. per rappresentare un monitor in scena), un parallelepipedo rigido generico e un cilindro rigido (es. un rullo o un perno). A differenza di `User`, non sono `OpenSimModel`: non hanno un proprio `show()`/`export()`, e per essere visualizzati vanno prima aggiunti a un container (`model + screen`, `model + box`, `model + cylinder`, vedi "Comporre più modelli").
 
 ## Contenuto del progetto
 
@@ -51,8 +51,9 @@ src/opensim_models/
 	components/
 		__init__.py                 # wrapper Python-friendly (Body, Marker, Joint, OffsetFrame, WeldConstraint, PointConstraint, ConstantDistanceConstraint, ExponentialContactForce, ...) dietro gli accessori di OpenSimModel
 		box.py                      # Box(components.Body): parallelepipedo rigido generico
+		cylinder.py                 # Cylinder(components.Body): cilindro rigido parametrico
 		screen.py                   # Screen(components.Body): pannello plexiglass parametrico
-		assets/meshes/               # mesh generata automaticamente per Box/Screen, di default (vedi mesh_dir sotto)
+		assets/meshes/               # mesh generata automaticamente per Box/Cylinder/Screen, di default (vedi mesh_dir sotto)
 scripts/
 	generate_user_code.py          # rigenera _posture_generated.py/_joint_centers_generated.py dalle tabelle; non installato col package, solo per chi sviluppa opensim-models
 tests/
@@ -65,11 +66,12 @@ tests/
 	test_user_generated_code_is_fresh.py  # verifica che _posture_generated.py/_joint_centers_generated.py siano allineati alle tabelle
 	test_screen.py                 # test esaustivi di Screen (dimensionamento, posa, mesh)
 	test_box.py                    # test esaustivi di Box (dimensioni/massa, posa live, spigoli, mesh)
+	test_cylinder.py               # test di Cylinder (dimensioni/massa, posa, mesh)
 	test_geometry.py               # test di operators.euclidean_distance (nessuna dipendenza da OpenSim) e di from_global_to_local/from_local_to_global (richiedono OpenSim)
 	test_cad_import.py             # test di OpenSimModel.from_step (richiede pythonocc-core)
 ```
 
-Ogni modello specifico (oggi solo `User`) vive nella propria sottocartella sotto `models/`, con il proprio codice e i propri asset; nuovi modelli (es. un attrezzo da palestra completo) si aggiungono allo stesso modo, come ulteriori sottoclassi di `OpenSimModel`. I componenti (`Box`, `Screen`) vivono invece in `components/`, distinti da `models/` proprio perché non sono container: nuovi componenti si aggiungono come ulteriori sottoclassi di `components.Body`, nello stesso file (uno per componente).
+Ogni modello specifico (oggi solo `User`) vive nella propria sottocartella sotto `models/`, con il proprio codice e i propri asset; nuovi modelli (es. un attrezzo da palestra completo) si aggiungono allo stesso modo, come ulteriori sottoclassi di `OpenSimModel`. I componenti (`Box`, `Screen`, `Cylinder`) vivono invece in `components/`, distinti da `models/` proprio perché non sono container: nuovi componenti si aggiungono come ulteriori sottoclassi di `components.Body`, nello stesso file (uno per componente).
 
 I setter/getter di postura e le property di centro articolare di `User` (`set_left_hip_flexionextension`, `left_hip`, ...) non sono scritti a mano: `user.py` eredita da due mixin (`_PostureMixin`, `_JointCenterMixin`) generati come codice sorgente letterale -- non con `setattr`/metaclassi -- a partire dalle tabelle dichiarative `_posture_table.py`/`_joint_center_table.py`, proprio per restare completamente visibili all'autocompletamento/IntelliSense come se fossero scritti a mano. Per aggiungere una nuova coordinata di postura o un nuovo centro articolare: aggiungi una riga alla tabella corrispondente, poi esegui `python scripts/generate_user_code.py` per rigenerare i due file `_*_generated.py` (committati nel repository); `tests/test_user_generated_code_is_fresh.py` fallisce se li dimentichi.
 
@@ -817,6 +819,36 @@ for corner in box.corners:
 
 Come `Screen`, `Box` è internamente un unico `opensim.Body` ("box") saldato al ground con un `WeldJoint` (nessun grado di libertà): non ha una `postura` articolare propria, è pensato per essere posizionato/orientato rigidamente, non animato internamente.
 
+## Creare un cilindro (Cylinder)
+
+`Cylinder` rappresenta un cilindro pieno rigido ed è un componente `Body`, da aggiungere a un container per visualizzarlo:
+
+```python
+from opensim_models import Cylinder
+
+cylinder = Cylinder(
+    radius=0.05, height=0.4,                # metri; altezza lungo l'asse locale Y
+    center_x=0.0, center_y=0.5, center_z=0.0,  # centro nel ground frame, in metri
+    angle_deg=(0.0, 0.0, 90.0),             # Eulero X-Y-Z body-fixed, in gradi
+    mass_kg=2.0,
+)
+```
+
+`radius`, `height` e `mass_kg` hanno property in lettura e setter dedicati (`set_radius`, `set_height`, `set_mass_kg`); anche ogni coordinata del centro (`center_x`/`center_y`/`center_z`) e l'orientamento (`angle_deg`) hanno il proprio setter. `origin`/`set_origin` espongono il centro come tupla. Dimensioni e massa devono essere finite e strettamente positive. A ogni modifica il corpo e la mesh vengono ricostruiti, preservando la posa corrente; il tensore d'inerzia è quello analitico del cilindro pieno omogeneo:
+
+- `Ixx = Izz = mass_kg * (3 * radius² + height²) / 12`
+- `Iyy = mass_kg * radius² / 2`
+
+La mesh STL è generata da `write_cylinder_mesh` e scritta in `mesh_dir` (default `components/assets/meshes/`); `name` imposta il nome del corpo e quello del file mesh (`cylinder.stl` per il default). Sono disponibili anche `rotate()`, `translate()` e `copy()`, come per gli altri componenti:
+
+```python
+cylinder.set_radius(0.06)
+cylinder.set_origin((0.1, 0.5, 0.0))
+scene = model + cylinder
+```
+
+Il corpo OpenSim (`"cylinder"` per default) è saldato al ground tramite un `WeldJoint`; il cilindro è quindi un componente rigido, non animabile internamente.
+
 ## Comporre più modelli
 
 Due o più `OpenSimModel` (ad esempio due `User`) possono essere combinati in un unico modello OpenSim esportabile:
@@ -828,7 +860,7 @@ combined.export("combined.osim")
 
 `combined` è un `OpenSimModel` generico che contiene tutti i componenti di entrambi gli operandi (corpi, giunti, muscoli/forze, marker, vincoli); nessuno dei due operandi originali viene modificato, e il risultato non è mai una sottoclasse di uno dei due (anche `user_a + user_b` è un `OpenSimModel` generico, non uno `User`). Se un componente del secondo modello ha lo stesso nome di uno già presente nel primo, viene rinominato automaticamente con un prefisso (il nome della classe dell'operando, oppure un prefisso esplicito tramite `add_model(..., name=...)`). I giunti agganciati al `ground` nei modelli sorgente restano agganciati al ground condiviso del modello combinato, così i due modelli mantengono la propria collocazione di default.
 
-Un **componente** standalone come `Box`/`Screen` (non un `OpenSimModel`, ma dotato di un container interno privato) si aggiunge con lo stesso `+`, in entrambe le direzioni, con lo stesso risultato -- un `OpenSimModel` fuso, pronto per `show()`/`export()`:
+Un **componente** standalone come `Box`/`Screen`/`Cylinder` (non un `OpenSimModel`, ma dotato di un container interno privato) si aggiunge con lo stesso `+`, in entrambe le direzioni, con lo stesso risultato -- un `OpenSimModel` fuso, pronto per `show()`/`export()`:
 
 ```python
 scena = user_model + screen       # oppure screen + user_model: stesso risultato

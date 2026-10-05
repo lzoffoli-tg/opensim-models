@@ -1720,5 +1720,6 @@ class Probe(_ComponentWrapper):
 # else's model (see each module's own docstring for why).
 from .box import Box
 from .screen import Screen
+from .cylinder import Cylinder
 
-__all__ += ["Box", "Screen"]
+__all__ += ["Box", "Screen", "Cylinder"]

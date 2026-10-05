@@ -384,7 +384,12 @@ class Box(Body):
         position, rotation = self._position_and_rotation()
         half_size = np.array([self._width, self._height, self._depth]) / 2.0
         signs = np.array(
-            [(sx, sy, sz) for sx in (-1.0, 1.0) for sy in (-1.0, 1.0) for sz in (-1.0, 1.0)]
+            [
+                (sx, sy, sz)
+                for sx in (-1.0, 1.0)
+                for sy in (-1.0, 1.0)
+                for sz in (-1.0, 1.0)
+            ]
         )
         return tuple(tuple(position + rotation @ (sign * half_size)) for sign in signs)
 
@@ -436,9 +441,13 @@ class Box(Body):
             If ``direction`` is a zero vector, or ``origin`` is a
             coordinate without exactly 3 values.
         """
-        return rotate_object(self._container, origin, direction, angle_deg, inplace=inplace)
+        return rotate_object(
+            self._container, origin, direction, angle_deg, inplace=inplace
+        )
 
-    def translate(self, direction: tuple[float, float, float], inplace: bool = True) -> Any:
+    def translate(
+        self, direction: tuple[float, float, float], inplace: bool = True
+    ) -> Any:
         """Translate this box by ``direction`` (``dx, dy, dz``), in ground frame.
 
         Thin wrapper around
@@ -510,7 +519,10 @@ class Box(Body):
         self._name = name
 
     def _rebuild(
-        self, *, origin: tuple[float, float, float], angle_deg: tuple[float, float, float]
+        self,
+        *,
+        origin: tuple[float, float, float],
+        angle_deg: tuple[float, float, float],
     ) -> None:
         """Recreate the box body, mesh and joint at the given pose."""
         width, height, depth = self._width, self._height, self._depth
@@ -539,7 +551,10 @@ class Box(Body):
         container.model = container.opensim.Model()
         container.model.setName("Box")
         body = container.opensim.Body(
-            self._name, mass, container.opensim.Vec3(0, 0, 0), container.opensim.Inertia(*inertia)
+            self._name,
+            mass,
+            container.opensim.Vec3(0, 0, 0),
+            container.opensim.Inertia(*inertia),
         )
         container.model.addBody(body)
         body.attachGeometry(container.opensim.Mesh(mesh_filename))
